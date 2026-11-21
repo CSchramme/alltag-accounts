@@ -120,6 +120,7 @@ const { smtp, build, readEml } = require('./mail');
 
     // Formulare nur von dieser Seite (no-referrer würde Browser „Origin: null“ schicken lassen und eigene Formulare sperren)
     assert.equal((await fetch(`${B}/anmelden`)).headers.get('referrer-policy'), 'same-origin');
+    assert.equal((await fetch(`${B}/anmelden`, { method: 'HEAD' })).status, 200);
     assert.equal((await fetch(`${B}/anmelden`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://boese.example' }, body: 'login=ben&password=x' })).status, 403);
     // Admin über die API: sperren beendet Sitzungen, App wird benachrichtigt; Löschen hinterlässt eine Notiz für die App
     const benId = (await api('/api/accounts')).accounts.find((a) => a.name === 'ben').id, hooksBefore = hooks;

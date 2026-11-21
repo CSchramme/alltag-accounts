@@ -530,7 +530,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(fs.readFileSync(path.join(__dirname, 'public', name)));
     }
     if (req.method === 'POST' && !ownOrigin(req)) return page(res, 'Nicht erlaubt', '<p>Diese Anfrage kam nicht von dieser Seite.</p>', { status: 403 });
-    const [fn] = match(pages, req.method, url.pathname);
+    const [fn] = match(pages, req.method === 'HEAD' ? 'GET' : req.method, url.pathname); // HEAD wie GET, Node lässt den Inhalt weg
     if (!fn) return page(res, 'Nicht gefunden', '<p class="links"><a href="/anmelden">Zur Anmeldung</a></p>', { status: 404 });
     await fn(req, res, url.searchParams);
   } catch (e) {
