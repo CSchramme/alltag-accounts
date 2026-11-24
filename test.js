@@ -124,6 +124,7 @@ const { smtp, build, readEml } = require('./mail');
     assert.equal((await fetch(`${B}/anmelden`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://boese.example' }, body: 'login=ben&password=x' })).status, 403);
     // Admin über die API: sperren beendet Sitzungen, App wird benachrichtigt; Löschen hinterlässt eine Notiz für die App
     const benId = (await api('/api/accounts')).accounts.find((a) => a.name === 'ben').id, hooksBefore = hooks;
+    assert.equal((await api(`/api/accounts/${benId}`, 'PATCH', { pro: true })).account.pro, true);
     await api(`/api/accounts/${benId}`, 'PATCH', { disabled: true });
     await new Promise((r) => setTimeout(r, 200));
     assert.ok(hooks > hooksBefore);
