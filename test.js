@@ -134,6 +134,11 @@ const { smtp, build, readEml } = require('./mail');
     assert.ok(!after.accounts.some((a) => a.id === benId) && after.deleted.some((d) => d.id === benId));
     assert.equal((await api('/api/import', 'POST', { accounts: [] })).status, 409); // Umzug nur in einen leeren Dienst
     assert.match((await api('/api/health')).mail, /nicht eingerichtet/);
+    // Beta-Einladung: Code gleich per Mail, mit Tester-ID und Link, der den Code einträgt
+    const bi = await api('/api/invites', 'POST', { note: 'BETA-0007 Mia', days: 30, email: 'mia@example.org', name: 'Mia', betaId: 'BETA-0007' });
+    const bm = lastMail('mia@example.org');
+    assert.ok(bi.mailed && bm.text.includes('BETA-0007') && bm.text.includes(`/registrieren?code=${bi.created[0]}`));
+    assert.ok((await browser().go(`/registrieren?code=${bi.created[0]}`)).text.includes(`value="${bi.created[0]}"`)); // Code schon eingetragen
     // Einladungscodes: Flyer 30–90 Tage, Sammelcode für mehrere Anmeldungen, alte Codes laufen ab, zu leichte Passwörter gibt es nicht
     const fl = await api('/api/invites', 'POST', { count: 3, days: 30 });
     assert.equal(fl.created.length, 3);

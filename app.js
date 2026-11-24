@@ -476,7 +476,20 @@ const api = {
       created.push(code);
     }
     saveInvites(list);
-    json(res, 200, { invites: pubInvites(), created });
+    // Beta-Test: Einladung gleich per Mail, mit Tester-ID und Link, der den Code schon einträgt
+    const email = normEmail(b.email);
+    let mailed = false;
+    if (email && EMAIL_RE.test(email) && count === 1) {
+      const name = String(b.name || '').trim().slice(0, 60), beta = /^BETA-\d{4}$/.test(String(b.betaId || '')) ? b.betaId : '';
+      const code = created[0], shown = code.replace(/^(\d{3})(\d{3})$/, '$1 $2');
+      sendMail(email, 'Deine Einladung zum Beta-Test von Alltag', [`Hallo${name ? ` ${name}` : ''},`,
+        `schön, dass du beim Beta-Test von Alltag mitmachst!${beta ? ` Deine Tester-ID ist ${beta}.` : ''}`,
+        `Dein Einladungscode: ${shown}. Er gilt ${days} Tage. Über den Knopf ist er beim Registrieren schon eingetragen.`,
+        'Fehler und Ideen meldest du später direkt in der App unter Profil → Beta-Test. Danke fürs Mitmachen!'],
+      ['Jetzt registrieren', `${SELF}/registrieren?code=${code}`]);
+      mailed = true;
+    }
+    json(res, 200, { invites: pubInvites(), created, mailed });
   },
   'DELETE /api/invites/:code': (req, res, code) => { saveInvites(invites().filter((x) => x.code !== code || x.usedBy)); json(res, 200, { invites: pubInvites() }); },
   // Umzug: Konten und Codes der bisherigen App einmalig übernehmen (nur solange es hier noch keine gibt)
