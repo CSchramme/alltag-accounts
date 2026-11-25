@@ -46,6 +46,8 @@ Der Konto-Dienst ist ein OpenID-Connect-Anbieter. Jede Login-Bibliothek, die „
 
 Beim ersten Anmelden fragt Alltag den Nutzer, ob die App diese Daten bekommen darf. Unter „Dein Konto“ → „Verbundene Apps“ kann er das zurücknehmen; Access-Token gelten dann sofort nicht mehr. Rücksprung-Adressen müssen `https://` sein, nur zum Testen geht `http://localhost`. Abmelden über Alltag (end_session) und Apps ohne Schlüssel (reine Browser- oder Handy-Apps) gibt es noch nicht.
 
+Eine kleine Test-App ohne Pakete liegt in `beispiel/` (zeigt Anmelden, Zustimmung und was die App bekommt; läuft auf alltag-test.chrdev.eu). Starten mit `ALLTAG_CLIENT_ID`, `ALLTAG_CLIENT_SECRET` und `node beispiel/app.js`, Test mit `node beispiel/test.js`.
+
 Beispiel Auth.js:
 
 ```js

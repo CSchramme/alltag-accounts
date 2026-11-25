@@ -1,0 +1,8 @@
+{
+  "name": "alltag-login-beispiel",
+  "private": true,
+  "description": "Test-App für Anmelden mit Alltag (OpenID Connect), ohne Pakete",
+  "main": "app.js",
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node app.js", "test": "node test.js" }
+}

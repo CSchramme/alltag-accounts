@@ -2,3 +2,4 @@ data/
 data-*/
 .env
 node_modules/
+beispiel/.session-key
