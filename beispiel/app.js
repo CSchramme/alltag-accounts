@@ -53,7 +53,7 @@ code,pre{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}pre{white-
 .ok{color:#5fd4b0}.err{color:#ff8aa6}.small{font-size:13px;color:#8f9ab8}.secondary{background:transparent;border:1px solid rgba(255,255,255,.2);color:#e8ecf7}a{color:#8fb0ff}`;
 const CSP = `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self' ${ISSUER}; frame-ancestors 'none'; base-uri 'none'`;
 function page(res, body, { status = 200, cookies: set = [] } = {}) {
-  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Set-Cookie': set });
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...(set.length ? { 'Set-Cookie': set } : {}) });
   res.end(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Test: Anmelden mit Alltag</title><style>${CSS}</style></head><body><main><span class="tag">Test-App</span>${body}</main></body></html>`);
 }
 const go = (res, to, set = []) => { res.writeHead(303, { Location: to, 'Set-Cookie': set, 'Cache-Control': 'no-store' }); res.end(); };
