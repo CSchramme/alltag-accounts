@@ -9,7 +9,7 @@ app.js        Server, Seiten und API (Node.js ≥ 20, keine npm-Pakete)
 mail.js       E-Mails per SMTP (STARTTLS/TLS, AUTH PLAIN); ohne SMTP_HOST als .eml-Datei in data/mails
 public/       style.css, icon.svg
 test.js       Selbsttest (node test.js)
-data/         wird beim Start angelegt: Konten, Einladungscodes, Einmal-Links – geheim, nie veröffentlichen
+data/         wird beim Start angelegt: Konten, Einladungscodes, Einmal-Links, Apps und Signaturschlüssel (oidc-key.json) – geheim, nie veröffentlichen
 ```
 
 ## So reden die beiden Apps miteinander
@@ -25,7 +25,32 @@ Konto-Dienst ── POST alltag-app.de/api/accounts-hook (Bearer) ──▶ App 
                 (nach Sperren, Passwort ändern, Löschen; sonst alle 3 Minuten)
 ```
 
-API (alle mit `Authorization: Bearer <ACCOUNTS_SECRET>`): `POST /api/exchange`, `GET /api/accounts` (mit Löschnotizen), `PATCH /api/accounts/:id` (school, admin, demo, jury, disabled, reset), `DELETE /api/accounts/:id`, `GET/POST /api/invites`, `DELETE /api/invites/:code`, `POST /api/import` (Umzug, nur in einen leeren Dienst), `GET /api/health` (prüft den Mailversand).
+API (alle mit `Authorization: Bearer <ACCOUNTS_SECRET>`): `POST /api/exchange`, `GET /api/accounts` (mit Löschnotizen), `PATCH /api/accounts/:id` (school, admin, demo, jury, pro, disabled, reset), `DELETE /api/accounts/:id`, `GET/POST /api/invites`, `DELETE /api/invites/:code`, `GET/POST /api/clients`, `PATCH/DELETE /api/clients/:id` (Apps für „Anmelden mit Alltag“), `POST /api/import` (Umzug, nur in einen leeren Dienst), `GET /api/health` (prüft den Mailversand).
+
+## Anmelden mit Alltag (für eigene Apps)
+
+Der Konto-Dienst ist ein OpenID-Connect-Anbieter. Jede Login-Bibliothek, die „OpenID Connect“ oder „OIDC“ kann, funktioniert damit (z. B. Auth.js/NextAuth, Passport, Keycloak als Vermittler).
+
+1. **App eintragen:** alltag-app.de/admin → „Anmelden mit Alltag“ → Name und Rücksprung-Adresse(n), z. B. `https://meine-app.de/auth/callback`. Danach siehst du **Client-ID** und **Schlüssel**. Den Schlüssel gibt es nur in diesem Moment, sonst „Neuer Schlüssel“.
+2. **In der App einstellen:**
+
+   | Einstellung | Wert |
+   |---|---|
+   | Issuer / Anbieter | `https://accounts.alltag-app.de` |
+   | Discovery | `https://accounts.alltag-app.de/.well-known/openid-configuration` |
+   | Client-ID, Client-Secret | aus Schritt 1 |
+   | Scopes | `openid profile`, mit E-Mail-Adresse zusätzlich `email` |
+   | Ablauf | Authorization Code, PKCE (S256) empfohlen |
+
+3. **Was die App bekommt:** `sub` (feste Kennung, für jede App eine andere), `name` und `preferred_username` (Benutzername), mit Scope `email` auch `email` und `email_verified`. Das id_token ist mit RS256 signiert (Schlüssel unter `/oauth/jwks`), Access-Token gelten 1 Stunde für `/oauth/userinfo`.
+
+Beim ersten Anmelden fragt Alltag den Nutzer, ob die App diese Daten bekommen darf. Unter „Dein Konto“ → „Verbundene Apps“ kann er das zurücknehmen; Access-Token gelten dann sofort nicht mehr. Rücksprung-Adressen müssen `https://` sein, nur zum Testen geht `http://localhost`. Abmelden über Alltag (end_session) und Apps ohne Schlüssel (reine Browser- oder Handy-Apps) gibt es noch nicht.
+
+Beispiel Auth.js:
+
+```js
+{ id: 'alltag', name: 'Alltag', type: 'oidc', issuer: 'https://accounts.alltag-app.de', clientId: process.env.ALLTAG_ID, clientSecret: process.env.ALLTAG_SECRET }
+```
 
 ## Auf Plesk einrichten
 

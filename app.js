@@ -164,7 +164,8 @@ const CSP = `default-src 'none'; img-src 'self'; style-src 'self'; form-action '
 function page(res, title, body, { status = 200, headers = {} } = {}) {
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'same-origin', 'Cross-Origin-Opener-Policy': 'same-origin', // nicht no-referrer: dann schicken Browser bei Formularen „Origin: null“ ...(SECURE ? { 'Strict-Transport-Security': 'max-age=31536000' } : {}), ...headers,
+    // Referrer nicht no-referrer: dann schicken Browser bei Formularen „Origin: null“
+    'Referrer-Policy': 'same-origin', 'Cross-Origin-Opener-Policy': 'same-origin', ...(SECURE ? { 'Strict-Transport-Security': 'max-age=31536000' } : {}), ...headers,
   });
   res.end(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · Alltag</title><link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"></head>
@@ -180,11 +181,12 @@ const note = (m) => (m ? `<p class="note">${esc(m)}</p>` : '');
 const NOTES = { pw: 'Dein Passwort ist geändert. Melde dich mit dem neuen an.', out: 'Du bist abgemeldet.', del: 'Dein Konto ist gelöscht.' };
 
 function loginPage(res, { next = '', ziel = '', login = '', error = '', info = '', status } = {}) {
-  page(res, 'Anmelden', `${note(info)}<form method="post" action="/anmelden">${hidden('next', next)}${hidden('ziel', ziel)}
+  const r = oauthZiel(ziel) ? oauthRequest(new URL(ziel, SELF).searchParams) : null, app = r && !r.fatal && !r.error ? r : null;
+  page(res, 'Anmelden', `${app ? note(`Melde dich an, um mit deinem Alltag-Konto bei ${app.c.name} weiterzumachen.`) : ''}${note(info)}<form method="post" action="/anmelden">${hidden('next', next)}${hidden('ziel', ziel)}
     ${field('login', 'Benutzername oder E-Mail', `value="${esc(login)}" autocomplete="username" autocapitalize="off" spellcheck="false" required maxlength="120"`)}
     ${field('password', 'Passwort', 'type="password" autocomplete="current-password" required maxlength="200"')}
     ${err(error)}<button>Anmelden</button></form>
-    <p class="links"><a href="/passwort-vergessen">Passwort vergessen?</a><a href="/registrieren">Neu hier? Registrieren</a></p>`, { status });
+    <p class="links"><a href="/passwort-vergessen">Passwort vergessen?</a><a href="/registrieren">Neu hier? Registrieren</a></p>`, { status, headers: app ? { 'Content-Security-Policy': cspTo(app.redirect) } : {} });
 }
 function registerPage(res, { v = {}, error = '', status } = {}) {
   const first = !accounts().length;
@@ -219,7 +221,7 @@ function finish(req, res, a, { next = '/', ziel = '', firstDevice = false } = {}
     if (y.devices.length && !firstDevice) sendMail(y.email, 'Neue Anmeldung bei Alltag', [`Hallo ${y.name},`, `dein Konto wurde gerade auf einem neuen Gerät angemeldet: ${ua}, ${when(Date.now())} Uhr.`, 'Warst du das? Dann musst du nichts tun.', mailWarn]);
     y.devices = [...y.devices, { h, ua, first: new Date().toISOString(), last: new Date().toISOString() }].slice(-20);
   });
-  redirect(res, ziel === 'konto' ? '/konto' : appUrl(x, next), [sessionCookie(x), cookie('dev', dev, 2 * 365 * 86400), cookie('ap', '', 0)]);
+  redirect(res, ziel === 'konto' ? '/konto' : oauthZiel(ziel) ? ziel : appUrl(x, next), [sessionCookie(x), cookie('dev', dev, 2 * 365 * 86400), cookie('ap', '', 0)]);
 }
 
 async function readForm(req) {
@@ -344,7 +346,7 @@ const pages = {
   'GET /konto': (req, res, q) => {
     const a = sessionOf(req);
     if (!a) return redirect(res, '/anmelden?ziel=konto');
-    accountPage(res, a, { info: { email: 'Wir haben eine Mail an die neue Adresse geschickt. Erst nach dem Klick auf den Link gilt sie.', pw: 'Dein Passwort ist geändert. Alle anderen Geräte sind abgemeldet.', out: 'Alle anderen Geräte sind abgemeldet.' }[q.get('ok')] || '' });
+    accountPage(res, a, { info: { email: 'Wir haben eine Mail an die neue Adresse geschickt. Erst nach dem Klick auf den Link gilt sie.', pw: 'Dein Passwort ist geändert. Alle anderen Geräte sind abgemeldet.', out: 'Alle anderen Geräte sind abgemeldet.', app: 'Die App hat keinen Zugriff mehr. Meldest du dich dort wieder mit Alltag an, fragt Alltag dich erneut.' }[q.get('ok')] || '' });
   },
   'POST /konto/email': async (req, res) => {
     const a = sessionOf(req), f = await readForm(req), email = normEmail(f.email);
@@ -384,6 +386,30 @@ const pages = {
     removeAccount(a.id);
     redirect(res, '/anmelden?msg=del', [cookie('as', '', 0)]);
   },
+  'POST /konto/apps': async (req, res) => { // Zustimmung zurücknehmen: Zugangs-Schlüssel der App gelten sofort nicht mehr
+    const a = sessionOf(req), f = await readForm(req);
+    if (!a) return redirect(res, '/anmelden?ziel=konto');
+    update(a.id, (y) => { if (y.apps) delete y.apps[String(f.app || '')]; });
+    redirect(res, '/konto?ok=app');
+  },
+  // Anmelden mit Alltag: Anfrage prüfen → anmelden → zustimmen (einmal je App und Umfang) → Code zurück an die App
+  'GET /oauth/authorize': (req, res, q) => {
+    const r = oauthRequest(q);
+    if (r.fatal) return page(res, 'Anmelden nicht möglich', `<p>${esc(r.fatal)}</p>`, { status: 400 });
+    if (r.error) return back(res, r, { error: r.error });
+    const a = sessionOf(req);
+    if (!a) return r.prompt === 'none' ? back(res, r, { error: 'login_required' }) : redirect(res, `/anmelden?ziel=${encodeURIComponent(`/oauth/authorize?${q}`)}`);
+    if (consented(a, r) && r.prompt !== 'consent') return grant(res, r, a);
+    if (r.prompt === 'none') return back(res, r, { error: 'consent_required' });
+    consentPage(res, a, r, q);
+  },
+  'POST /oauth/authorize': async (req, res) => {
+    const f = await readForm(req), q = new URLSearchParams(String(f.q || '')), r = oauthRequest(q), a = sessionOf(req);
+    if (r.fatal || r.error) return page(res, 'Anmelden nicht möglich', `<p>${esc(r.fatal || 'Die Anfrage der App ist ungültig.')}</p>`, { status: 400 });
+    if (!a) return redirect(res, `/anmelden?ziel=${encodeURIComponent(`/oauth/authorize?${q}`)}`);
+    if (f.ok !== '1') return back(res, r, { error: 'access_denied' });
+    grant(res, r, update(a.id, (y) => { y.apps = { ...y.apps, [r.c.id]: { scope: r.scope, at: new Date().toISOString() } }; }));
+  },
   'GET /abmelden': (req, res) => redirect(res, `${APP_URL}/`, [cookie('as', '', 0)]), // die App hat ihre Sitzung schon beendet
 };
 
@@ -414,9 +440,90 @@ function accountPage(res, a, { info = '', error = '', status } = {}) {
       ${field('old', 'Bisheriges Passwort', 'type="password" autocomplete="current-password" required')}${field('password', 'Neues Passwort (ab 8 Zeichen)', 'type="password" autocomplete="new-password" required minlength="8"')}<button class="secondary">Passwort ändern</button></form></details>
     <details><summary>Geräte (${(a.devices || []).length})</summary><ul class="devices">${(a.devices || []).slice().reverse().map((d) => `<li><b>${esc(d.ua)}</b><span>zuletzt ${esc(when(d.last))}</span></li>`).join('')}</ul>
       <form method="post" action="/konto/abmelden-ueberall"><button class="secondary">Auf allen anderen Geräten abmelden</button></form></details>
+    ${Object.keys(a.apps || {}).length ? `<details><summary>Verbundene Apps (${Object.keys(a.apps).length})</summary><ul class="devices">${Object.entries(a.apps).map(([id, g]) => `<li><b>${esc(clients().find((c) => c.id === id)?.name || 'Gelöschte App')}</b>
+      <span>seit ${esc(when(g.at))} · sieht ${g.scope.includes('email') ? 'Benutzername und E-Mail' : 'Benutzername'}</span><form method="post" action="/konto/apps">${hidden('app', id)}<button class="secondary">Zugriff entfernen</button></form></li>`).join('')}</ul></details>` : ''}
     <details><summary>Konto löschen</summary><p class="small">Löscht dein Konto und alle Daten in der App sofort. Das lässt sich nicht rückgängig machen.</p><form method="post" action="/konto/loeschen">
       ${field('password', 'Dein Passwort', 'type="password" autocomplete="current-password" required')}<label class="check"><input type="checkbox" name="sure" value="ja" required> Ja, alles löschen</label><button class="danger">Konto löschen</button></form></details>
     <p class="links"><a href="/abmelden">Abmelden</a></p>`, { status });
+}
+
+/* ------------------------------------------------------------------ Anmelden mit Alltag (OpenID Connect) */
+// Nur Apps, die der Admin einträgt (clients.json, Schlüssel nur als Hash). Authorization Code + PKCE (S256), id_token mit RS256,
+// sub je App verschieden (pairwise), Benutzername immer, E-Mail nur mit Scope „email“. Zustimmungen stehen am Konto (apps).
+const clients = () => load('clients.json', []);
+const saveClients = (l) => save('clients.json', l);
+const pubClient = ({ secretHash, ...c }) => c;
+const OIDC_KEY = (() => {
+  let k = load('oidc-key.json', null);
+  if (!k) { const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }); k = { pem: privateKey.export({ type: 'pkcs8', format: 'pem' }) }; save('oidc-key.json', k); }
+  const priv = crypto.createPrivateKey(k.pem), jwk = crypto.createPublicKey(priv).export({ format: 'jwk' });
+  return { priv, jwk: { ...jwk, kid: sha(jwk.n).toString('hex').slice(0, 16), use: 'sig', alg: 'RS256' } };
+})();
+const b64 = (v) => Buffer.from(typeof v === 'string' ? v : JSON.stringify(v)).toString('base64url');
+const jwt = (claims) => { const head = `${b64({ alg: 'RS256', typ: 'JWT', kid: OIDC_KEY.jwk.kid })}.${b64(claims)}`; return `${head}.${crypto.sign('sha256', Buffer.from(head), OIDC_KEY.priv).toString('base64url')}`; };
+const SCOPES = ['openid', 'profile', 'email'];
+const subFor = (a, c) => sign(`sub.${c.id}.${a.id}`).slice(0, 32); // feste Kennung je App: Apps können Nutzer nicht untereinander abgleichen
+const claims = (a, scope) => ({ name: a.name, preferred_username: a.name, ...(scope.includes('email') ? { email: a.email, email_verified: !!a.emailOk } : {}) });
+const DISCOVERY = { issuer: SELF, authorization_endpoint: `${SELF}/oauth/authorize`, token_endpoint: `${SELF}/oauth/token`, userinfo_endpoint: `${SELF}/oauth/userinfo`,
+  jwks_uri: `${SELF}/oauth/jwks`, response_types_supported: ['code'], grant_types_supported: ['authorization_code'], subject_types_supported: ['pairwise'],
+  id_token_signing_alg_values_supported: ['RS256'], scopes_supported: SCOPES, token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+  code_challenge_methods_supported: ['S256'], claims_supported: ['sub', 'name', 'preferred_username', 'email', 'email_verified'], authorization_response_iss_parameter_supported: true };
+const okRedirect = (u) => { try { const x = new URL(u); return !x.hash && !x.username && !x.password && (x.protocol === 'https:' || (x.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(x.hostname))); } catch { return false; } };
+const cleanRedirects = (v) => { const l = [...new Set((Array.isArray(v) ? v : String(v || '').split(/\s+/)).map((x) => String(x).trim()).filter(Boolean))]; return l.length && l.length <= 10 && l.every(okRedirect) ? l : null; };
+const cspTo = (u) => CSP.replace("form-action 'self'", `form-action 'self' ${new URL(u).origin}`);
+const oauthZiel = (z) => /^\/oauth\/authorize\?[^\s\\]{1,3000}$/.test(String(z || ''));
+function oauthRequest(q) { // App und Rücksprung-Adresse zuerst: Fehler davor gehen nie an eine ungeprüfte Adresse
+  const c = clients().find((x) => x.id === q.get('client_id') && !x.disabled), to = q.get('redirect_uri') || '';
+  if (!c || !c.redirects.includes(to)) return { fatal: 'Diese App ist bei Alltag nicht eingetragen, oder ihre Rücksprung-Adresse stimmt nicht.' };
+  const scope = [...new Set(String(q.get('scope') || '').split(/\s+/))].filter((x) => SCOPES.includes(x));
+  const r = { c, redirect: to, state: (q.get('state') || '').slice(0, 500), nonce: (q.get('nonce') || '').slice(0, 300), scope, challenge: q.get('code_challenge') || '', prompt: q.get('prompt') || '' };
+  if (q.get('response_type') !== 'code') r.error = 'unsupported_response_type';
+  else if (!scope.includes('openid')) r.error = 'invalid_scope';
+  else if (r.challenge && (q.get('code_challenge_method') !== 'S256' || !/^[\w-]{43}$/.test(r.challenge))) r.error = 'invalid_request';
+  return r;
+}
+const back = (res, r, params) => redirect(res, `${r.redirect}${r.redirect.includes('?') ? '&' : '?'}${new URLSearchParams({ ...params, ...(r.state ? { state: r.state } : {}), iss: SELF })}`);
+const consented = (a, r) => { const g = a.apps?.[r.c.id]; return !!g && r.scope.every((x) => g.scope.includes(x)); };
+const oauthCodes = new Map(); // Einmal-Codes für Apps: 60 Sekunden, nur im Speicher (Passenger hat einen Prozess)
+function grant(res, r, a) {
+  const code = rand();
+  oauthCodes.set(code, { a: a.id, c: r.c.id, redirect: r.redirect, scope: r.scope, nonce: r.nonce, challenge: r.challenge, exp: Date.now() + 60e3 });
+  back(res, r, { code });
+}
+function consentPage(res, a, r, q) {
+  page(res, 'Anmelden mit Alltag', `<p><b>${esc(r.c.name)}</b> möchte dich mit deinem Alltag-Konto anmelden.</p>
+    <p>Die App erfährt deinen Benutzernamen${r.scope.includes('email') ? ' und deine E-Mail-Adresse' : ''}. Stundenplan, Noten, Nachrichten und dein Passwort sieht sie nicht.</p>
+    <p class="small">Angemeldet als <b>${esc(a.name)}</b>. Danach geht es weiter zu ${esc(new URL(r.redirect).host)}. Unter „Dein Konto“ kannst du den Zugriff jederzeit wieder entfernen.</p>
+    <form method="post" action="/oauth/authorize">${hidden('q', q.toString())}<button name="ok" value="1">Erlauben</button><button class="secondary" name="ok" value="0">Abbrechen</button></form>`,
+  { headers: { 'Content-Security-Policy': cspTo(r.redirect) } });
+}
+// Token-Abruf durch den Server der App (Formular, Schlüssel per Basic oder im Formular)
+async function oauthToken(req, res) {
+  const f = await readForm(req), basic = /^Basic (\S+)$/.exec(req.headers.authorization || ''), ip = `ip:${clientIp(req)}`;
+  const dec = (v) => { try { return decodeURIComponent(String(v).replace(/\+/g, ' ')); } catch { return ''; } };
+  const [id, secret] = basic ? Buffer.from(basic[1], 'base64').toString().split(':').map(dec) : [f.client_id, f.client_secret];
+  const fail = (status, error) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...(status === 401 ? { 'WWW-Authenticate': 'Basic realm="Alltag"' } : {}) }); res.end(JSON.stringify({ error })); };
+  if (throttled(ip)) return fail(429, 'invalid_client');
+  const c = clients().find((x) => x.id === String(id || '') && !x.disabled);
+  if (!c || !same(sha(String(secret || '')).toString('hex'), c.secretHash)) { strike(ip); await pause(); return fail(401, 'invalid_client'); }
+  if (f.grant_type !== 'authorization_code') return fail(400, 'unsupported_grant_type');
+  const g = oauthCodes.get(String(f.code || ''));
+  oauthCodes.delete(String(f.code || ''));
+  const a = g && g.exp > Date.now() && g.c === c.id && g.redirect === f.redirect_uri && accounts().find((x) => x.id === g.a);
+  if (!a || a.disabled || !a.emailOk || !a.apps?.[c.id]) return fail(400, 'invalid_grant');
+  if (g.challenge && !same(crypto.createHash('sha256').update(String(f.code_verifier || '')).digest('base64url'), g.challenge)) return fail(400, 'invalid_grant');
+  const now = Math.floor(Date.now() / 1000), exp = now + 3600, at = b64({ a: a.id, c: c.id, s: g.scope, e: exp, v: a.ver || 0 });
+  json(res, 200, { access_token: `${at}.${sign(`at.${at}`)}`, token_type: 'Bearer', expires_in: 3600, scope: g.scope.join(' '),
+    id_token: jwt({ iss: SELF, sub: subFor(a, c), aud: c.id, iat: now, exp, ...(g.nonce ? { nonce: g.nonce } : {}), ...claims(a, g.scope) }) });
+}
+// Nutzerdaten mit dem Zugangs-Schlüssel; ungültig nach Ablauf, Passwortwechsel, Sperre oder entfernter Zustimmung
+function oauthUser(req, res) {
+  const [p, sig] = (/^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1] || '').split('.');
+  let d = null;
+  try { d = p && sig && same(sig, sign(`at.${p}`)) ? JSON.parse(Buffer.from(p, 'base64url')) : null; } catch { d = null; }
+  const a = d && d.e > Date.now() / 1000 && accounts().find((x) => x.id === d.a), c = a && clients().find((x) => x.id === d.c && !x.disabled);
+  if (!c || a.disabled || (a.ver || 0) !== d.v || !a.apps?.[c.id]) { res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'WWW-Authenticate': 'Bearer error="invalid_token"' }); return res.end('{"error":"invalid_token"}'); }
+  json(res, 200, { sub: subFor(a, c), ...claims(a, d.s) });
 }
 
 /* ------------------------------------------------------------------ API für die App (Bearer ACCOUNTS_SECRET) */
@@ -502,6 +609,32 @@ const api = {
     if (Array.isArray(b.invites)) saveInvites(b.invites);
     json(res, 200, { imported: list.length });
   },
+  // Apps für „Anmelden mit Alltag“: Schlüssel gibt es nur in der Antwort beim Anlegen bzw. Erneuern
+  'GET /api/clients': (req, res) => json(res, 200, { clients: clients().map(pubClient) }),
+  'POST /api/clients': async (req, res) => {
+    const b = await readJson(req), name = String(b.name || '').trim().slice(0, 60), redirects = cleanRedirects(b.redirects);
+    if (!name) return json(res, 400, { error: 'Bitte einen Namen für die App eintragen.' });
+    if (!redirects) return json(res, 400, { error: 'Rücksprung-Adressen: 1 bis 10, je eine volle Adresse mit https:// (nur für Tests http://localhost).' });
+    const secret = rand(), c = { id: `app-${crypto.randomBytes(6).toString('hex')}`, name, redirects, secretHash: sha(secret).toString('hex'), created: new Date().toISOString() };
+    saveClients([...clients(), c]);
+    json(res, 200, { clients: clients().map(pubClient), created: c.id, secret });
+  },
+  'PATCH /api/clients/:id': async (req, res, id) => {
+    const b = await readJson(req), list = clients(), c = list.find((x) => x.id === id);
+    if (!c) return json(res, 404, { error: 'nicht gefunden' });
+    if (b.name !== undefined) { const n = String(b.name).trim().slice(0, 60); if (!n) return json(res, 400, { error: 'Bitte einen Namen eintragen.' }); c.name = n; }
+    if (b.redirects !== undefined) { const r = cleanRedirects(b.redirects); if (!r) return json(res, 400, { error: 'Rücksprung-Adressen: 1 bis 10, je eine volle Adresse mit https://.' }); c.redirects = r; }
+    if (typeof b.disabled === 'boolean') c.disabled = b.disabled;
+    let secret = null;
+    if (b.newSecret === true) { secret = rand(); c.secretHash = sha(secret).toString('hex'); }
+    saveClients(list);
+    json(res, 200, { clients: list.map(pubClient), secret });
+  },
+  'DELETE /api/clients/:id': (req, res, id) => {
+    saveClients(clients().filter((x) => x.id !== id));
+    saveAccounts(accounts().map((a) => { if (a.apps) delete a.apps[id]; return a; })); // Zustimmungen gleich mit
+    json(res, 200, { clients: clients().map(pubClient) });
+  },
   'GET /api/health': async (req, res) => json(res, 200, { mail: await mail.check(), accounts: accounts().length, unconfirmed: accounts().filter((a) => !a.emailOk).length }),
 };
 
@@ -510,6 +643,7 @@ setInterval(() => {
   const old = accounts().filter((a) => !a.emailOk && !a.legacy && Date.now() - Date.parse(a.created) > 7 * 864e5);
   for (const a of old) removeAccount(a.id);
   for (const [k, c] of codes) if (c.exp < Date.now()) codes.delete(k);
+  for (const [k, c] of oauthCodes) if (c.exp < Date.now()) oauthCodes.delete(k);
   save('links.json', load('links.json', []).filter((x) => x.exp > Date.now()));
 }, 3600e3).unref();
 
@@ -532,6 +666,10 @@ const ownOrigin = (req) => { const o = req.headers.origin || (req.headers.refere
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, SELF);
   try {
+    if (req.method === 'GET' && url.pathname === '/.well-known/openid-configuration') return json(res, 200, DISCOVERY);
+    if (req.method === 'GET' && url.pathname === '/oauth/jwks') return json(res, 200, { keys: [OIDC_KEY.jwk] });
+    if (req.method === 'POST' && url.pathname === '/oauth/token') return await oauthToken(req, res);
+    if (['GET', 'POST'].includes(req.method) && url.pathname === '/oauth/userinfo') return oauthUser(req, res);
     if (url.pathname.startsWith('/api/')) {
       const h = String(req.headers.authorization || '');
       if (!h.startsWith('Bearer ') || !same(h.slice(7), API_SECRET)) { await pause(); return json(res, 401, { error: 'Schlüssel fehlt oder falsch' }); }

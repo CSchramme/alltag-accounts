@@ -54,7 +54,7 @@ const { smtp, build, readEml } = require('./mail');
           headers: { 'User-Agent': ua, Cookie: Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; '), ...(form ? { 'Content-Type': 'application/x-www-form-urlencoded', Origin: B } : {}) },
           body: form ? new URLSearchParams(form) : undefined });
         for (const c of r.headers.getSetCookie()) { const [kv] = c.split(';'); const [k, v] = kv.split('='); if (v) jar[k] = v; else delete jar[k]; }
-        return { status: r.status, location: r.headers.get('location') || '', text: await r.text() };
+        return { status: r.status, location: r.headers.get('location') || '', csp: r.headers.get('content-security-policy') || '', text: await r.text() };
       };
       return { go, jar };
     };
@@ -85,6 +85,58 @@ const { smtp, build, readEml } = require('./mail');
     const w = await chef.go('/weiter?next=https://boese.example/x');
     assert.ok(w.location.startsWith(`${APP}/auth/callback?code=`) && w.location.endsWith('next=%2F'));
     assert.ok((await chef.go('/weiter?next=/kalender')).location.endsWith('next=%2Fkalender'));
+
+    // Anmelden mit Alltag (OpenID Connect): nur eingetragene Apps, Zustimmung einmal, id_token mit RS256, E-Mail nur mit Scope
+    const crypto = require('crypto');
+    assert.equal((await api('/api/clients', 'POST', { name: 'Spiel', redirects: 'http://boese.example/cb' })).status, 400); // nur https oder localhost
+    const cl = await api('/api/clients', 'POST', { name: 'Gameserver', redirects: 'https://spiel.example/cb http://localhost:5000/cb' });
+    assert.ok(cl.secret && cl.created && !JSON.stringify(cl.clients).includes('secretHash'));
+    const disc = await (await fetch(`${B}/.well-known/openid-configuration`)).json(), jwks = await (await fetch(disc.jwks_uri)).json();
+    assert.deepEqual([disc.issuer, disc.token_endpoint, jwks.keys[0].alg, 'd' in jwks.keys[0]], [B, `${B}/oauth/token`, 'RS256', false]); // nur der öffentliche Schlüssel
+    const verifier = 'v'.repeat(50), challenge = crypto.createHash('sha256').update(verifier).digest('base64url'), CB = 'https://spiel.example/cb';
+    const authQ = (extra = {}) => `/oauth/authorize?${new URLSearchParams({ response_type: 'code', client_id: cl.created, redirect_uri: CB, scope: 'openid email', state: 'xyz', nonce: 'n-1', code_challenge: challenge, code_challenge_method: 'S256', ...extra })}`;
+    const bad1 = await chef.go(authQ({ redirect_uri: 'https://boese.example/cb' }));
+    assert.deepEqual([bad1.status, bad1.location], [400, '']); // fremde Adresse: Fehlerseite statt Weiterleitung
+    assert.ok((await chef.go(authQ({ scope: 'email' }))).location.startsWith(`${CB}?error=invalid_scope&state=xyz`));
+    assert.ok((await browser().go(authQ({ prompt: 'none' }))).location.includes('error=login_required'));
+    const dev = browser(), toLogin = await dev.go(authQ());
+    const ziel = new URL(B + toLogin.location).searchParams.get('ziel');
+    const lp = await dev.go(toLogin.location);
+    assert.ok(lp.text.includes('bei Gameserver weiterzumachen') && lp.csp.includes("form-action 'self' https://spiel.example"));
+    const back1 = await dev.go('/anmelden', { login: 'chef', password: 'lange-geheime-worte', ziel });
+    assert.equal(back1.location, ziel);
+    const cons = await dev.go(back1.location);
+    assert.ok(cons.text.includes('<b>Gameserver</b> möchte') && cons.text.includes('E-Mail-Adresse') && cons.csp.includes('https://spiel.example'));
+    const q = new URL(B + ziel).searchParams.toString();
+    assert.ok((await dev.go('/oauth/authorize', { q, ok: '0' })).location.startsWith(`${CB}?error=access_denied`));
+    const ok1 = await dev.go('/oauth/authorize', { q, ok: '1' }), got = new URL(ok1.location);
+    assert.deepEqual([got.origin + got.pathname, got.searchParams.get('state'), got.searchParams.get('iss')], [CB, 'xyz', B]);
+    const token = (body, auth = `Basic ${Buffer.from(`${cl.created}:${cl.secret}`).toString('base64')}`) => fetch(`${B}/oauth/token`, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(auth ? { Authorization: auth } : {}) }, body: new URLSearchParams(body) }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
+    const code1 = got.searchParams.get('code'), tb = { grant_type: 'authorization_code', code: code1, redirect_uri: CB, code_verifier: verifier };
+    assert.equal((await token(tb, `Basic ${Buffer.from(`${cl.created}:falsch`).toString('base64')}`)).status, 401);
+    const tk = await token(tb);
+    assert.equal(tk.token_type, 'Bearer');
+    assert.equal((await token(tb)).status, 400); // Code nur einmal
+    const [h, pl, sig] = tk.id_token.split('.'), idt = JSON.parse(Buffer.from(pl, 'base64url'));
+    assert.ok(crypto.verify('sha256', Buffer.from(`${h}.${pl}`), crypto.createPublicKey({ key: jwks.keys[0], format: 'jwk' }), Buffer.from(sig, 'base64url')));
+    assert.deepEqual([idt.iss, idt.aud, idt.nonce, idt.name, idt.email, idt.email_verified, idt.sub.length], [B, cl.created, 'n-1', 'chef', 'chef@example.org', true, 32]);
+    const ui = async (t) => fetch(`${B}/oauth/userinfo`, { headers: { Authorization: `Bearer ${t}` } }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
+    assert.deepEqual(await ui(tk.access_token), { status: 200, sub: idt.sub, name: 'chef', preferred_username: 'chef', email: 'chef@example.org', email_verified: true });
+    assert.equal((await ui(`${tk.access_token}x`)).status, 401);
+    // schon zugestimmt: sofort zurück; ohne Scope email keine E-Mail; falscher PKCE-Schlüssel und Schlüssel im Formular
+    const ok2 = new URL((await dev.go(authQ({ scope: 'openid' }))).location);
+    assert.equal((await token({ ...tb, code: ok2.searchParams.get('code'), code_verifier: 'w'.repeat(50) })).status, 400);
+    const ok3 = new URL((await dev.go(authQ({ scope: 'openid' }))).location);
+    const tk3 = await token({ ...tb, code: ok3.searchParams.get('code'), client_id: cl.created, client_secret: cl.secret }, '');
+    const idt3 = JSON.parse(Buffer.from(tk3.id_token.split('.')[1], 'base64url'));
+    assert.deepEqual([idt3.sub, idt3.name, 'email' in idt3], [idt.sub, 'chef', false]);
+    // Zugriff in „Dein Konto“ entfernen → Zugangs-Schlüssel gilt nicht mehr; App löschen → Anfrage abgelehnt
+    assert.ok((await dev.go('/konto')).text.includes('Verbundene Apps (1)'));
+    assert.equal((await dev.go('/konto/apps', { app: cl.created })).location, '/konto?ok=app');
+    assert.equal((await ui(tk.access_token)).status, 401);
+    await api(`/api/clients/${cl.created}`, 'DELETE');
+    assert.equal((await dev.go(authQ())).status, 400);
 
     // Einladung → zweites Konto, Anmelden mit E-Mail, neues Gerät meldet sich per Mail
     const inv = await api('/api/invites', 'POST', { note: 'Ben' });
