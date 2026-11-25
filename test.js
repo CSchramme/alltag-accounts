@@ -177,6 +177,9 @@ const { smtp, build, readEml } = require('./mail');
     // Admin über die API: sperren beendet Sitzungen, App wird benachrichtigt; Löschen hinterlässt eine Notiz für die App
     const benId = (await api('/api/accounts')).accounts.find((a) => a.name === 'ben').id, hooksBefore = hooks;
     assert.equal((await api(`/api/accounts/${benId}`, 'PATCH', { pro: true })).account.pro, true);
+    const fam = (await api(`/api/accounts/${benId}`, 'PATCH', { plan: 'familie' })).account;
+    assert.deepEqual([fam.plan, fam.pro], ['familie', true]);
+    assert.equal((await api(`/api/accounts/${benId}`, 'PATCH', { plan: 'gold' })).account.plan, 'familie'); // unbekannt: bleibt
     await api(`/api/accounts/${benId}`, 'PATCH', { disabled: true });
     await new Promise((r) => setTimeout(r, 200));
     assert.ok(hooks > hooksBefore);

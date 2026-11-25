@@ -72,7 +72,7 @@ const cookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';'
 const clientIp = (req) => String(req.headers['x-real-ip'] || String(req.headers['x-forwarded-for'] || '').split(',').pop() || req.socket.remoteAddress || '').trim();
 const findLogin = (login) => { const l = String(login || '').trim().toLowerCase(); return accounts().find((a) => a.name === l || (a.email && a.email === l)); };
 const emailTaken = (e, exceptId) => accounts().some((a) => a.id !== exceptId && (a.email === e || a.pendingEmail === e));
-const pub = (a) => ({ id: a.id, name: a.name, email: a.email || '', emailOk: !!a.emailOk, school: a.school, admin: !!a.admin, demo: !!a.demo, jury: !!a.jury, pro: !!a.pro,
+const pub = (a) => ({ id: a.id, name: a.name, email: a.email || '', emailOk: !!a.emailOk, school: a.school, admin: !!a.admin, demo: !!a.demo, jury: !!a.jury, pro: !!a.pro, plan: a.plan || (a.pro ? 'pro' : 'free'),
   disabled: !!a.disabled, ver: a.ver || 0, created: a.created });
 function update(id, fn) { // ein Konto ändern und sichern; gibt das geänderte Konto zurück
   const list = accounts(), a = list.find((x) => x.id === id);
@@ -562,7 +562,8 @@ const api = {
       if (a.demo) a.emailOk = true; else delete a.jury; // Demo-Konten melden sich über die App an, ohne Mail
     }
     if (typeof b.jury === 'boolean') { if (!a.demo) return json(res, 400, { error: 'Erst als Demo-Konto einrichten.' }); a.jury = b.jury; }
-    if (typeof b.pro === 'boolean') a.pro = b.pro; // Pro-Funktionen, schaltet der Admin frei
+    if (typeof b.pro === 'boolean') { a.pro = b.pro; a.plan = b.pro ? (a.plan && a.plan !== 'free' ? a.plan : 'pro') : 'free'; } // alter Schalter
+    if (['free', 'pro', 'familie'].includes(b.plan)) { a.plan = b.plan; a.pro = b.plan !== 'free'; } // Abo-Plan, setzt der Admin
     saveAccounts(list);
     notifyApp();
     json(res, 200, { account: pub(a), password }); // neues Passwort nur in dieser einen Antwort
