@@ -94,8 +94,9 @@ const pause = () => new Promise((r) => setTimeout(r, 600));
 // Einladungscodes: 6 Ziffern, einzeln 7 Tage und einmal gültig; Sammelcode (Flyer) für `uses` Anmeldungen, 30–90 Tage
 const inviteEnd = (x) => Date.parse(x.created) + (x.days || 7) * 864e5;
 const usedCount = (x) => (x.uses ? (x.used || []).length : x.usedBy ? 1 : 0);
-const inviteOpen = (x) => usedCount(x) < (x.uses || 1) && Date.now() < inviteEnd(x);
-const pubInvites = () => invites().slice(-300).map(({ used, ...x }) => ({ ...x, usedCount: usedCount({ ...x, used }), open: inviteOpen({ ...x, used }), expires: new Date(inviteEnd(x)).toISOString() }));
+// forever = ohne Ablaufdatum, unlimited = Sammelcode ohne Höchstzahl (bleibt gültig, bis der Admin ihn stoppt)
+const inviteOpen = (x) => (x.unlimited || usedCount(x) < (x.uses || 1)) && (x.forever || Date.now() < inviteEnd(x));
+const pubInvites = () => invites().slice(-300).map(({ used, ...x }) => ({ ...x, usedCount: usedCount({ ...x, used }), open: inviteOpen({ ...x, used }), expires: x.forever ? null : new Date(inviteEnd(x)).toISOString() }));
 function newInvite(list) { let c; do c = String(crypto.randomInt(0, 1e6)).padStart(6, '0'); while (list.some((x) => x.code === c && inviteOpen(x))); return c; }
 const regFails = []; // falsche Einladungscodes, alle zusammen: nach 30 in einer Stunde pausiert das Registrieren
 
@@ -574,13 +575,14 @@ const api = {
   'GET /api/invites': (req, res) => json(res, 200, { invites: pubInvites() }),
   'POST /api/invites': async (req, res) => {
     const b = await readJson(req), list = invites();
-    const days = [30, 60, 90].includes(b.days) ? b.days : 7, uses = Math.min(1000, Math.max(0, Math.trunc(Number(b.uses)) || 0));
+    const forever = b.forever === true, unlimited = b.unlimited === true;
+    const days = forever ? 0 : [30, 60, 90].includes(b.days) ? b.days : 7, uses = unlimited ? 1 : Math.min(1000, Math.max(0, Math.trunc(Number(b.uses)) || 0));
     const count = uses ? 1 : Math.min(40, Math.max(1, Math.trunc(Number(b.count)) || 1));
     if (list.filter(inviteOpen).length + count > 200) return json(res, 400, { error: 'Es gibt schon zu viele offene Codes. Lösch erst ein paar.' });
     const created = [];
     for (let i = 0; i < count; i++) {
       const code = newInvite(list);
-      list.push({ code, note: String(b.note || '').trim().slice(0, 80), days, ...(uses ? { uses, used: [] } : {}), created: new Date().toISOString(), usedBy: null, usedAt: null });
+      list.push({ code, note: String(b.note || '').trim().slice(0, 80), days, ...(forever ? { forever } : {}), ...(uses ? { uses, used: [], ...(unlimited ? { unlimited } : {}) } : {}), created: new Date().toISOString(), usedBy: null, usedAt: null });
       created.push(code);
     }
     saveInvites(list);
@@ -592,7 +594,7 @@ const api = {
       const code = created[0], shown = code.replace(/^(\d{3})(\d{3})$/, '$1 $2');
       sendMail(email, 'Deine Einladung zum Beta-Test von Alltag', [`Hallo${name ? ` ${name}` : ''},`,
         `schön, dass du beim Beta-Test von Alltag mitmachst!${beta ? ` Deine Tester-ID ist ${beta}.` : ''}`,
-        `Dein Einladungscode: ${shown}. Er gilt ${days} Tage. Über den Knopf ist er beim Registrieren schon eingetragen.`,
+        `Dein Einladungscode: ${shown}. Er gilt ${forever ? 'ohne Ablaufdatum' : `${days} Tage`}. Über den Knopf ist er beim Registrieren schon eingetragen.`,
         'Fehler und Ideen meldest du später direkt in der App unter Profil → Beta-Test. Danke fürs Mitmachen!'],
       ['Jetzt registrieren', `${SELF}/registrieren?code=${code}`]);
       mailed = true;

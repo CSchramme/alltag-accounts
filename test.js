@@ -201,6 +201,14 @@ const { smtp, build, readEml } = require('./mail');
     const sc = (await api('/api/invites', 'POST', { uses: 2, days: 90 })).created[0];
     for (const n of ['flyer-a', 'flyer-b']) assert.ok((await browser().go('/registrieren', { code: sc, name: n, email: `${n}@example.org`, password: 'gruene-wiese-9', school: 'none' })).text.includes('Bestätige'));
     assert.equal((await browser().go('/registrieren', { code: sc, name: 'flyer-c', email: 'flyer-c@example.org', password: 'gruene-wiese-9', school: 'none' })).status, 403);
+    // ohne Ablaufdatum und ohne Höchstzahl: bleibt offen, auch nach vielen Anmeldungen und langer Zeit
+    const fc = (await api('/api/invites', 'POST', { forever: true, unlimited: true, uses: 5 })).created[0];
+    for (const n of ['frei-a', 'frei-b', 'frei-c']) assert.ok((await browser().go('/registrieren', { code: fc, name: n, email: `${n}@example.org`, password: 'gruene-wiese-9', school: 'none' })).text.includes('Bestätige'));
+    const fInv = (await api('/api/invites')).invites.find((i) => i.code === fc);
+    assert.deepEqual([fInv.usedCount, fInv.open, fInv.expires, fInv.unlimited, fInv.forever], [3, true, null, true, true]);
+    const invFileF = path.join(dir, 'invites.json');
+    fs.writeFileSync(invFileF, JSON.stringify(JSON.parse(fs.readFileSync(invFileF, 'utf8')).map((i) => (i.code === fc ? { ...i, created: '2020-01-01T00:00:00.000Z' } : i))));
+    assert.equal((await api('/api/invites')).invites.find((i) => i.code === fc).open, true);
     const scInv = (await api('/api/invites')).invites.find((i) => i.code === sc);
     assert.deepEqual([scInv.usedCount, scInv.open, 'used' in scInv], [2, false, false]); // Liste der Konten bleibt auf dem Server
     assert.equal((await browser().go('/registrieren', { code: fl.created[1], name: 'lea', email: 'lea@example.org', password: '12345678', school: 'none' })).status, 400);
