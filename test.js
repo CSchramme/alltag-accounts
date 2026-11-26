@@ -68,8 +68,14 @@ const { smtp, build, readEml } = require('./mail');
     assert.equal((await api('/api/accounts', 'GET', null, 'falsch')).status, 401);
     // erstes Konto mit Start-Code → Admin; erst nach Bestätigung angemeldet
     const chef = browser();
-    assert.equal((await chef.go('/registrieren', { code: 'falsch', name: 'chef', email: 'chef@example.org', password: 'lange-geheime-worte', school: 'edupage' })).status, 403);
-    const reg = await chef.go('/registrieren', { code: 'start-123', name: 'Chef', email: 'Chef@Example.org', password: 'lange-geheime-worte', school: 'edupage' });
+    // Passwort zweimal: ungleich geht nicht; Seiten haben den Knopf „Anzeigen“ und dürfen nur eigenes Skript laden
+    const pw2 = await browser().go('/registrieren', { code: 'start-123', name: 'zwei', email: 'zwei@example.org', password: 'lange-geheime-worte', password2: 'andere-geheime-worte', school: 'none' });
+    assert.ok(pw2.status === 400 && pw2.text.includes('nicht gleich'));
+    const rp = await browser().go('/registrieren');
+    assert.ok(rp.text.includes('name="password2"') && rp.text.includes('data-pw') && rp.csp.includes("script-src 'self'"));
+    assert.ok((await (await fetch(`${B}/konto.js`)).text()).includes('data-pw'));
+    assert.equal((await chef.go('/registrieren', { code: 'falsch', name: 'chef', email: 'chef@example.org', password: 'lange-geheime-worte', password2: 'lange-geheime-worte', school: 'edupage' })).status, 403);
+    const reg = await chef.go('/registrieren', { code: 'start-123', name: 'Chef', email: 'Chef@Example.org', password: 'lange-geheime-worte', password2: 'lange-geheime-worte', school: 'edupage' });
     assert.ok(reg.text.includes('Bestätige deine E-Mail') && reg.text.includes('c•••@example.org'));
     assert.equal((await chef.go('/anmelden', { login: 'chef', password: 'lange-geheime-worte' })).status, 200); // noch unbestätigt → Hinweis statt Weiterleitung
     const vm = lastMail('chef@example.org');
@@ -141,8 +147,8 @@ const { smtp, build, readEml } = require('./mail');
     // Einladung → zweites Konto, Anmelden mit E-Mail, neues Gerät meldet sich per Mail
     const inv = await api('/api/invites', 'POST', { note: 'Ben' });
     const ben = browser('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) Safari/604.1');
-    assert.ok((await ben.go('/registrieren', { code: inv.created[0], name: 'ben', email: 'chef@example.org', password: 'ben-hat-ein-passwort', school: 'untis' })).text.includes('schon ein Konto'));
-    await ben.go('/registrieren', { code: inv.created[0], name: 'ben', email: 'ben@example.org', password: 'ben-hat-ein-passwort', school: 'untis' });
+    assert.ok((await ben.go('/registrieren', { code: inv.created[0], name: 'ben', email: 'chef@example.org', password: 'ben-hat-ein-passwort', password2: 'ben-hat-ein-passwort', school: 'untis' })).text.includes('schon ein Konto'));
+    await ben.go('/registrieren', { code: inv.created[0], name: 'ben', email: 'ben@example.org', password: 'ben-hat-ein-passwort', password2: 'ben-hat-ein-passwort', school: 'untis' });
     await ben.go(linkIn(lastMail('ben@example.org').text));
     assert.equal((await api('/api/invites')).invites.find((i) => i.code === inv.created[0]).usedBy !== null, true);
     const mailsBefore = mails().length;
@@ -202,11 +208,11 @@ const { smtp, build, readEml } = require('./mail');
     assert.ok(flDays > 29.9 && flDays <= 30);
     assert.ok((Date.parse((await api('/api/invites', 'POST', { days: 999 })).invites.at(-1).expires) - Date.now()) / 864e5 <= 7); // unbekannte Dauer → 7 Tage
     const sc = (await api('/api/invites', 'POST', { uses: 2, days: 90 })).created[0];
-    for (const n of ['flyer-a', 'flyer-b']) assert.ok((await browser().go('/registrieren', { code: sc, name: n, email: `${n}@example.org`, password: 'gruene-wiese-9', school: 'none' })).text.includes('Bestätige'));
-    assert.equal((await browser().go('/registrieren', { code: sc, name: 'flyer-c', email: 'flyer-c@example.org', password: 'gruene-wiese-9', school: 'none' })).status, 403);
+    for (const n of ['flyer-a', 'flyer-b']) assert.ok((await browser().go('/registrieren', { code: sc, name: n, email: `${n}@example.org`, password: 'gruene-wiese-9', password2: 'gruene-wiese-9', school: 'none' })).text.includes('Bestätige'));
+    assert.equal((await browser().go('/registrieren', { code: sc, name: 'flyer-c', email: 'flyer-c@example.org', password: 'gruene-wiese-9', password2: 'gruene-wiese-9', school: 'none' })).status, 403);
     // ohne Ablaufdatum und ohne Höchstzahl: bleibt offen, auch nach vielen Anmeldungen und langer Zeit
     const fc = (await api('/api/invites', 'POST', { forever: true, unlimited: true, uses: 5 })).created[0];
-    for (const n of ['frei-a', 'frei-b', 'frei-c']) assert.ok((await browser().go('/registrieren', { code: fc, name: n, email: `${n}@example.org`, password: 'gruene-wiese-9', school: 'none' })).text.includes('Bestätige'));
+    for (const n of ['frei-a', 'frei-b', 'frei-c']) assert.ok((await browser().go('/registrieren', { code: fc, name: n, email: `${n}@example.org`, password: 'gruene-wiese-9', password2: 'gruene-wiese-9', school: 'none' })).text.includes('Bestätige'));
     const fInv = (await api('/api/invites')).invites.find((i) => i.code === fc);
     assert.deepEqual([fInv.usedCount, fInv.open, fInv.expires, fInv.unlimited, fInv.forever], [3, true, null, true, true]);
     const invFileF = path.join(dir, 'invites.json');
@@ -214,12 +220,12 @@ const { smtp, build, readEml } = require('./mail');
     assert.equal((await api('/api/invites')).invites.find((i) => i.code === fc).open, true);
     const scInv = (await api('/api/invites')).invites.find((i) => i.code === sc);
     assert.deepEqual([scInv.usedCount, scInv.open, 'used' in scInv], [2, false, false]); // Liste der Konten bleibt auf dem Server
-    assert.equal((await browser().go('/registrieren', { code: fl.created[1], name: 'lea', email: 'lea@example.org', password: '12345678', school: 'none' })).status, 400);
+    assert.equal((await browser().go('/registrieren', { code: fl.created[1], name: 'lea', email: 'lea@example.org', password: '12345678', password2: '12345678', school: 'none' })).status, 400);
     const oldCode = (await api('/api/invites', 'POST', { note: 'alt' })).created[0], invFile = path.join(dir, 'invites.json');
     fs.writeFileSync(invFile, JSON.stringify(JSON.parse(fs.readFileSync(invFile, 'utf8')).map((i) => (i.code === oldCode ? { ...i, created: new Date(Date.now() - 8 * 864e5).toISOString() } : i))));
-    assert.equal((await browser().go('/registrieren', { code: oldCode, name: 'zu-spaet', email: 'z@example.org', password: 'gruene-wiese-8', school: 'none' })).status, 403);
+    assert.equal((await browser().go('/registrieren', { code: oldCode, name: 'zu-spaet', email: 'z@example.org', password: 'gruene-wiese-8', password2: 'gruene-wiese-8', school: 'none' })).status, 403);
     // Konto-Seite: Passwort ändern hält dieses Gerät angemeldet
-    const k = await chef.go('/konto/passwort', { old: 'lange-geheime-worte', password: 'ganz-neue-worte-hier' });
+    const k = await chef.go('/konto/passwort', { old: 'lange-geheime-worte', password: 'ganz-neue-worte-hier', password2: 'ganz-neue-worte-hier' });
     assert.equal(k.location, '/konto?ok=pw');
     assert.equal((await chef.go('/konto')).status, 200);
   } finally {

@@ -144,16 +144,35 @@ function pendingOf(req) {
 }
 
 /* ------------------------------------------------------------------ E-Mails */
-function mailHtml(lines, button) {
-  const p = (t) => `<p style="margin:0 0 14px">${esc(t).replace(/\n/g, '<br>')}</p>`;
-  return `<!doctype html><html lang="de"><body style="margin:0;background:#f3f5fb;font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#131a30">
-<div style="max-width:520px;margin:0 auto;padding:28px 20px"><div style="background:#fff;border-radius:18px;padding:28px;border:1px solid #dde3f0">
-<p style="margin:0 0 18px;font-weight:700;font-size:20px;color:#2e6bf0">Alltag</p>${lines.map(p).join('')}
-${button ? `<p style="margin:22px 0"><a href="${esc(button[1])}" style="background:#2e6bf0;color:#fff;text-decoration:none;padding:12px 20px;border-radius:12px;font-weight:600;display:inline-block">${esc(button[0])}</a></p>
-<p style="margin:0;color:#5b6478;font-size:13px">Falls der Knopf nicht geht: ${esc(button[1])}</p>` : ''}</div>
-<p style="color:#5b6478;font-size:12px;text-align:center;margin-top:16px">Alltag · Kalender, Stundenplan, Hausaufgaben. Alles in einer App.</p></div></body></html>`;
+// Mails im Alltag-Look: Logo, Farbbalken, Überschrift = Betreff, großer Knopf, Fußzeile mit Impressum und Datenschutz.
+// Nur Tabellen und Inline-Stile, damit es auch in Outlook und Gmail passt; Farbverlauf fällt dort auf Blau zurück.
+function mailHtml(title, lines, button) {
+  const font = "font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+  const p = (t) => `<p style="margin:0 0 14px;font-size:16px;line-height:1.55;color:#334155">${esc(t).replace(/\n/g, '<br>')}</p>`;
+  const host = new URL(APP_URL).host, link = (href, text) => `<a href="${esc(href)}" style="color:#8a93a8;text-decoration:underline">${esc(text)}</a>`;
+  return `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light only"><title>${esc(title)}</title></head>
+<body style="margin:0;padding:0;background:#f6f7fb;${font};color:#0f172a">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0">${esc(lines[1] || lines[0] || '')}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f7fb"><tr><td align="center" style="padding:32px 16px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px">
+<tr><td style="padding:0 4px 18px"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
+  <td><img src="${esc(APP_URL)}/icon-192.png" width="40" height="40" alt="" style="display:block;border:0;border-radius:10px"></td>
+  <td style="padding-left:12px;font-size:21px;font-weight:700;letter-spacing:-.01em;color:#0f172a">Alltag</td></tr></table></td></tr>
+<tr><td style="background:#ffffff;border:1px solid #e3e6ee;border-radius:20px">
+  <div style="height:6px;border-radius:20px 20px 0 0;background:#2e6bf0;background-image:linear-gradient(90deg,#5b8cff,#ff5f86 55%,#ffae57)"></div>
+  <div style="padding:28px 28px 26px">
+    <h1 style="margin:0 0 18px;font-size:24px;line-height:1.25;letter-spacing:-.015em;color:#0f172a">${esc(title)}</h1>
+    ${lines.map(p).join('')}
+    ${button ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:22px 0 6px"><tr><td style="border-radius:12px;background:#2e6bf0">
+      <a href="${esc(button[1])}" style="display:inline-block;padding:14px 26px;font-size:16px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:12px">${esc(button[0])}</a></td></tr></table>
+    <p style="margin:16px 0 0;font-size:13px;line-height:1.5;color:#5b6478">Falls der Knopf nicht geht, kopier diesen Link in deinen Browser:<br><a href="${esc(button[1])}" style="color:#2e6bf0;word-break:break-all">${esc(button[1])}</a></p>` : ''}
+  </div></td></tr>
+<tr><td style="padding:20px 8px 0;text-align:center;font-size:12px;line-height:1.7;color:#8a93a8">
+  <b style="color:#5b6478">Alltag</b> · Kalender, Stundenplan, Hausaufgaben. Alles in einer App.<br>
+  ${link(APP_URL, host)} · ${link(`${APP_URL}/impressum.html`, 'Impressum')} · ${link(`${APP_URL}/datenschutz.html`, 'Datenschutz')}</td></tr>
+</table></td></tr></table></body></html>`;
 }
-const sendMail = (to, subject, lines, button) => mail.send({ to, subject, text: [...lines, button ? `${button[0]}: ${button[1]}` : ''].join('\n\n').trim(), html: mailHtml(lines, button) })
+const sendMail = (to, subject, lines, button) => mail.send({ to, subject, text: [...lines, button ? `${button[0]}: ${button[1]}` : ''].join('\n\n').trim(), html: mailHtml(subject, lines, button) })
   .catch((e) => console.error(`Mail an ${mask(to)} fehlgeschlagen:`, e.message));
 const mailVerify = (a, email) => sendMail(email, 'Bitte bestätige deine E-Mail-Adresse', [`Hallo ${a.name},`,
   'bitte bestätige deine E-Mail-Adresse für Alltag. Der Link gilt 48 Stunden.', 'Wenn du kein Konto angelegt hast, kannst du diese Mail ignorieren.'],
@@ -161,7 +180,7 @@ const mailVerify = (a, email) => sendMail(email, 'Bitte bestätige deine E-Mail-
 const mailWarn = `Warst du das nicht? Setz bitte sofort dein Passwort zurück, dann werden alle Geräte abgemeldet: ${SELF}/passwort-vergessen`;
 
 /* ------------------------------------------------------------------ Seiten */
-const CSP = `default-src 'none'; img-src 'self'; style-src 'self'; form-action 'self' ${new URL(APP_URL).origin}; frame-ancestors 'none'; base-uri 'none'`;
+const CSP = `default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; form-action 'self' ${new URL(APP_URL).origin}; frame-ancestors 'none'; base-uri 'none'`;
 function page(res, title, body, { status = 200, headers = {} } = {}) {
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff',
@@ -169,13 +188,15 @@ function page(res, title, body, { status = 200, headers = {} } = {}) {
     'Referrer-Policy': 'same-origin', 'Cross-Origin-Opener-Policy': 'same-origin', ...(SECURE ? { 'Strict-Transport-Security': 'max-age=31536000' } : {}), ...headers,
   });
   res.end(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} · Alltag</title><link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"></head>
+<title>${esc(title)} · Alltag</title><link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/konto.js" defer></script></head>
 <body><main><a class="brand" href="${esc(APP_URL)}/"><img src="/icon.svg" alt="" width="40" height="40"><span>Alltag</span></a>
 <section class="card"><h1>${esc(title)}</h1>${body}</section>
 <footer><a href="${esc(APP_URL)}/impressum.html">Impressum</a><a href="${esc(APP_URL)}/datenschutz.html">Datenschutz</a></footer></main></body></html>`);
 }
 const redirect = (res, to, setCookies = []) => { res.writeHead(303, { Location: to, 'Set-Cookie': setCookies, 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin' }); res.end(); };
-const field = (name, label, attrs = '') => `<label><span>${label}</span><input name="${name}" ${attrs}></label>`;
+const field = (name, label, attrs = '') => (/type="password"/.test(attrs) // Passwortfelder mit Knopf zum Anzeigen (konto.js)
+  ? `<label><span>${label}</span><div class="pw"><input name="${name}" ${attrs}><button type="button" class="pw-toggle" data-pw aria-pressed="false" aria-label="Passwort anzeigen">Anzeigen</button></div></label>`
+  : `<label><span>${label}</span><input name="${name}" ${attrs}></label>`);
 const hidden = (name, value) => `<input type="hidden" name="${name}" value="${esc(value)}">`;
 const err = (m) => (m ? `<p class="error" role="alert">${esc(m)}</p>` : '');
 const note = (m) => (m ? `<p class="note">${esc(m)}</p>` : '');
@@ -196,6 +217,7 @@ function registerPage(res, { v = {}, error = '', status } = {}) {
     ${field('name', 'Benutzername', `value="${esc(v.name)}" autocomplete="username" autocapitalize="off" spellcheck="false" required minlength="3" maxlength="30" pattern="[A-Za-z0-9._\\-]+"`)}
     ${field('email', 'E-Mail-Adresse', `type="email" value="${esc(v.email)}" autocomplete="email" required maxlength="120"`)}
     ${field('password', 'Passwort (ab 8 Zeichen)', 'type="password" autocomplete="new-password" required minlength="8" maxlength="200"')}
+    ${field('password2', 'Passwort wiederholen', 'type="password" autocomplete="new-password" required minlength="8" maxlength="200"')}
     <fieldset><legend>Welche Schulsoftware nutzt deine Schule?</legend><div class="choice">${SCHOOLS.map(([k, l]) => `<label><input type="radio" name="school" value="${k}"${(v.school || 'edupage') === k ? ' checked' : ''}><span>${l}</span></label>`).join('')}</div></fieldset>
     <p class="small">Den Zugang zur Schulsoftware gibst du danach in der App ein. Bei „Keine“ trägst du deinen Stundenplan selbst ein. Was mit deinen Daten passiert, steht in der <a href="${esc(APP_URL)}/datenschutz.html">Datenschutzerklärung</a>.</p>
     ${err(error)}<button>Konto anlegen</button></form>
@@ -259,6 +281,7 @@ const pages = {
     if (!/^[a-z0-9._-]{3,30}$/.test(name)) return again('Benutzername: 3 bis 30 Zeichen, nur Buchstaben, Ziffern, Punkt, Bindestrich und Unterstrich.');
     if (!EMAIL_RE.test(email)) return again('Bitte eine gültige E-Mail-Adresse eingeben.');
     if (pw.length < 8) return again('Das Passwort braucht mindestens 8 Zeichen.');
+    if (pw !== String(f.password2 || '')) return again('Die beiden Passwörter sind nicht gleich. Bitte gib es zweimal gleich ein.');
     if (weakPw(pw, name)) return again('Dieses Passwort ist zu leicht zu erraten. Nimm zum Beispiel drei Wörter, die nichts miteinander zu tun haben.');
     if (!SCHOOLS.some(([k]) => k === f.school)) return again('Bitte wähle aus, welche Schulsoftware deine Schule nutzt.');
     const list = accounts(), inv = invites(), first = !list.length, code = String(f.code || '').trim();
@@ -367,6 +390,7 @@ const pages = {
     if (throttled(`acc:${a.id}`)) return accountPage(res, a, { error: 'Zu viele Versuche. Bitte in 15 Minuten erneut.', status: 429 });
     if (!checkPw(a, String(f.old || ''))) { strike(`acc:${a.id}`); await pause(); return accountPage(res, a, { error: 'Das bisherige Passwort stimmt nicht.', status: 400 }); }
     if (pw.length < 8 || weakPw(pw, a.name)) return accountPage(res, a, { error: 'Das neue Passwort braucht mindestens 8 Zeichen und darf nicht zu leicht sein.', status: 400 });
+    if (pw !== String(f.password2 || '')) return accountPage(res, a, { error: 'Die beiden neuen Passwörter sind nicht gleich.', status: 400 });
     const x = passwordChanged(a.id, pw);
     redirect(res, '/konto?ok=pw', [sessionCookie(x)]); // dieses Gerät bleibt angemeldet
   },
@@ -417,7 +441,7 @@ const pages = {
 function newPasswordPage(res, t, error = '') {
   page(res, 'Neues Passwort', `<form method="post" action="/passwort-neu">${hidden('t', t)}
     ${field('password', 'Neues Passwort (ab 8 Zeichen)', 'type="password" autocomplete="new-password" required minlength="8" maxlength="200"')}
-    ${field('password2', 'Noch einmal', 'type="password" autocomplete="new-password" required minlength="8" maxlength="200"')}
+    ${field('password2', 'Neues Passwort wiederholen', 'type="password" autocomplete="new-password" required minlength="8" maxlength="200"')}
     ${err(error)}<button>Passwort speichern</button></form><p class="small">Danach sind alle Geräte abgemeldet.</p>`, { status: error ? 400 : 200 });
 }
 function passwordChanged(id, pw) {
@@ -438,7 +462,7 @@ function accountPage(res, a, { info = '', error = '', status } = {}) {
     <details><summary>E-Mail-Adresse ändern</summary><form method="post" action="/konto/email">
       ${field('email', 'Neue E-Mail-Adresse', 'type="email" autocomplete="email" required maxlength="120"')}${field('password', 'Dein Passwort', 'type="password" autocomplete="current-password" required')}<button class="secondary">Bestätigungs-Mail senden</button></form></details>
     <details><summary>Passwort ändern</summary><form method="post" action="/konto/passwort">
-      ${field('old', 'Bisheriges Passwort', 'type="password" autocomplete="current-password" required')}${field('password', 'Neues Passwort (ab 8 Zeichen)', 'type="password" autocomplete="new-password" required minlength="8"')}<button class="secondary">Passwort ändern</button></form></details>
+      ${field('old', 'Bisheriges Passwort', 'type="password" autocomplete="current-password" required')}${field('password', 'Neues Passwort (ab 8 Zeichen)', 'type="password" autocomplete="new-password" required minlength="8"')}${field('password2', 'Neues Passwort wiederholen', 'type="password" autocomplete="new-password" required minlength="8"')}<button class="secondary">Passwort ändern</button></form></details>
     <details><summary>Geräte (${(a.devices || []).length})</summary><ul class="devices">${(a.devices || []).slice().reverse().map((d) => `<li><b>${esc(d.ua)}</b><span>zuletzt ${esc(when(d.last))}</span></li>`).join('')}</ul>
       <form method="post" action="/konto/abmelden-ueberall"><button class="secondary">Auf allen anderen Geräten abmelden</button></form></details>
     ${Object.keys(a.apps || {}).length ? `<details><summary>Verbundene Apps (${Object.keys(a.apps).length})</summary><ul class="devices">${Object.entries(a.apps).map(([id, g]) => `<li><b>${esc(clients().find((c) => c.id === id)?.name || 'Gelöschte App')}</b>
@@ -651,7 +675,7 @@ setInterval(() => {
 }, 3600e3).unref();
 
 /* ------------------------------------------------------------------ Server */
-const STATIC = { '/style.css': ['style.css', 'text/css; charset=utf-8'], '/icon.svg': ['icon.svg', 'image/svg+xml'] };
+const STATIC = { '/style.css': ['style.css', 'text/css; charset=utf-8'], '/icon.svg': ['icon.svg', 'image/svg+xml'], '/konto.js': ['konto.js', 'text/javascript; charset=utf-8'] };
 function match(table, method, pathname) {
   for (const [key, fn] of Object.entries(table)) {
     const [m, p] = key.split(' ');
