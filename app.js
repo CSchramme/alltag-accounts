@@ -662,6 +662,15 @@ const api = {
     saveAccounts(accounts().map((a) => { if (a.apps) delete a.apps[id]; return a; })); // Zustimmungen gleich mit
     json(res, 200, { clients: clients().map(pubClient) });
   },
+  // Testmail im aktuellen Design (Verwaltung → Systemstatus): zeigt, ob der Mailversand klappt
+  'POST /api/test-mail': async (req, res) => {
+    const to = normEmail((await readJson(req)).to);
+    if (!EMAIL_RE.test(to)) return json(res, 400, { error: 'Bitte eine gültige E-Mail-Adresse eingeben.' });
+    const subject = 'Testmail von Alltag', button = ['Alltag öffnen', `${APP_URL}/`];
+    const lines = ['Hallo,', 'das ist eine Testmail von Alltag. Wenn du sie liest, klappt der Mailversand, und so sehen die Mails von Alltag jetzt aus.', `Gesendet am ${when(Date.now())} Uhr.`];
+    try { await mail.send({ to, subject, text: [...lines, `${button[0]}: ${button[1]}`].join('\n\n'), html: mailHtml(subject, lines, button) }); } catch (e) { return json(res, 502, { error: `Senden fehlgeschlagen: ${e.message}` }); }
+    json(res, 200, { ok: true, via: mail.configured ? 'smtp' : 'ordner' });
+  },
   'GET /api/health': async (req, res) => json(res, 200, { mail: await mail.check(), accounts: accounts().length, unconfirmed: accounts().filter((a) => !a.emailOk).length }),
 };
 

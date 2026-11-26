@@ -196,6 +196,9 @@ const { smtp, build, readEml } = require('./mail');
     assert.ok(!after.accounts.some((a) => a.id === benId) && after.deleted.some((d) => d.id === benId));
     assert.equal((await api('/api/import', 'POST', { accounts: [] })).status, 409); // Umzug nur in einen leeren Dienst
     assert.match((await api('/api/health')).mail, /nicht eingerichtet/);
+    assert.equal((await api('/api/test-mail', 'POST', { to: 'kaputt' })).status, 400);
+    assert.deepEqual(await api('/api/test-mail', 'POST', { to: 'Test@Example.org' }), { status: 200, ok: true, via: 'ordner' });
+    assert.equal(lastMail('test@example.org').subject, 'Testmail von Alltag');
     // Beta-Einladung: Code gleich per Mail, mit Tester-ID und Link, der den Code einträgt
     const bi = await api('/api/invites', 'POST', { note: 'BETA-0007 Mia', days: 30, email: 'mia@example.org', name: 'Mia', betaId: 'BETA-0007' });
     const bm = lastMail('mia@example.org');
