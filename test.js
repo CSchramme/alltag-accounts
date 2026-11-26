@@ -186,6 +186,32 @@ const { smtp, build, readEml } = require('./mail');
     const fam = (await api(`/api/accounts/${benId}`, 'PATCH', { plan: 'familie' })).account;
     assert.deepEqual([fam.plan, fam.pro], ['familie', true]);
     assert.equal((await api(`/api/accounts/${benId}`, 'PATCH', { plan: 'gold' })).account.plan, 'familie'); // unbekannt: bleibt
+    // Familie: nur mit eigenem Familien-Plan einladen, per Mail, Kind sieht vorher, was Eltern sehen; Plan geht an Mitglieder
+    const chefId = (await api('/api/accounts')).accounts.find((a) => a.name === 'chef').id;
+    assert.equal((await api(`/api/family/${chefId}/invite`, 'POST', { email: 'x@example.org' })).status, 403);
+    assert.equal((await api(`/api/family/${benId}/invite`, 'POST', { email: 'ben@example.org' })).status, 400); // eigene Adresse
+    await api(`/api/family/${benId}/invite`, 'POST', { email: 'chef@example.org', role: 'child' });
+    const fv = await api(`/api/family/${benId}/invite`, 'POST', { email: 'Neu@example.org', role: 'parent' });
+    assert.deepEqual(fv.family.invites.map((x) => [x.email, x.role]), [['chef@example.org', 'child'], ['neu@example.org', 'parent']]);
+    const fm = lastMail('chef@example.org').text, famLink = linkIn(fm.slice(fm.indexOf('Einladung ansehen')));
+    assert.ok(fm.includes('ben lädt dich') && fm.includes('Eltern in der Familie sehen') && !fm.includes('Einladungscode'));
+    assert.ok(/Einladungscode \d{3} \d{3}/.test(lastMail('neu@example.org').text)); // ohne Konto: Code zum Registrieren
+    const anonFam = await browser().go(linkIn(lastMail('neu@example.org').text.split('Einladung ansehen')[1]));
+    assert.ok(anonFam.text.includes('Anmelden und annehmen') && anonFam.text.includes('/registrieren?code='));
+    const fp = await chef.go(famLink);
+    assert.ok(fp.text.includes('als <b>Kind</b>') && fp.text.includes('value="ja"'));
+    assert.ok((await chef.go('/familie', { t: new URL(B + famLink).searchParams.get('t'), answer: 'ja' })).text.includes('Willkommen in der Familie'));
+    assert.equal((await chef.go(famLink)).status, 410); // Link nur einmal
+    const accs = (await api('/api/accounts')).accounts, chefA = accs.find((a) => a.id === chefId);
+    assert.deepEqual([chefA.plan, chefA.family], ['familie', { owner: benId, role: 'child', active: true }]);
+    assert.deepEqual(accs.find((a) => a.id === benId).family, { owner: benId, role: 'parent', active: true });
+    const view = (await api(`/api/family/${chefId}`)).family;
+    assert.deepEqual([view.members.map((m) => [m.name, m.role, m.owner]), view.invites], [[['ben', 'parent', true], ['chef', 'child', false]], []]); // Einladungen sieht nur der Besitzer
+    assert.equal((await api(`/api/family/${chefId}/members/${benId}`, 'DELETE')).status, 400); // Besitzer bleibt
+    assert.equal((await api(`/api/family/${benId}/invites/neu%40example.org`, 'DELETE')).family.invites.length, 0);
+    assert.equal((await api(`/api/family/${chefId}/members/${chefId}`, 'DELETE')).family, null); // austreten
+    const accs2 = (await api('/api/accounts')).accounts;
+    assert.deepEqual([accs2.find((a) => a.id === chefId).plan, accs2.find((a) => a.id === chefId).family, accs2.find((a) => a.id === benId).family], ['free', null, null]);
     await api(`/api/accounts/${benId}`, 'PATCH', { disabled: true });
     await new Promise((r) => setTimeout(r, 200));
     assert.ok(hooks > hooksBefore);

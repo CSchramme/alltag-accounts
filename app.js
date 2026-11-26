@@ -72,7 +72,9 @@ const cookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';'
 const clientIp = (req) => String(req.headers['x-real-ip'] || String(req.headers['x-forwarded-for'] || '').split(',').pop() || req.socket.remoteAddress || '').trim();
 const findLogin = (login) => { const l = String(login || '').trim().toLowerCase(); return accounts().find((a) => a.name === l || (a.email && a.email === l)); };
 const emailTaken = (e, exceptId) => accounts().some((a) => a.id !== exceptId && (a.email === e || a.pendingEmail === e));
-const pub = (a) => ({ id: a.id, name: a.name, email: a.email || '', emailOk: !!a.emailOk, school: a.school, admin: !!a.admin, demo: !!a.demo, jury: !!a.jury, pro: !!a.pro, plan: a.plan || (a.pro ? 'pro' : 'free'),
+const pub = (a, list = accounts()) => ({ id: a.id, name: a.name, email: a.email || '', emailOk: !!a.emailOk, school: a.school, admin: !!a.admin, demo: !!a.demo, jury: !!a.jury, pro: !!a.pro,
+  plan: a.family && famActive(a.family.owner, list) ? 'familie' : a.plan || (a.pro ? 'pro' : 'free'),
+  family: a.family ? { owner: a.family.owner, role: a.family.role, active: famActive(a.family.owner, list) } : null,
   disabled: !!a.disabled, ver: a.ver || 0, created: a.created });
 function update(id, fn) { // ein Konto ändern und sichern; gibt das geänderte Konto zurück
   const list = accounts(), a = list.find((x) => x.id === id);
@@ -244,7 +246,7 @@ function finish(req, res, a, { next = '/', ziel = '', firstDevice = false } = {}
     if (y.devices.length && !firstDevice) sendMail(y.email, 'Neue Anmeldung bei Alltag', [`Hallo ${y.name},`, `dein Konto wurde gerade auf einem neuen Gerät angemeldet: ${ua}, ${when(Date.now())} Uhr.`, 'Warst du das? Dann musst du nichts tun.', mailWarn]);
     y.devices = [...y.devices, { h, ua, first: new Date().toISOString(), last: new Date().toISOString() }].slice(-20);
   });
-  redirect(res, ziel === 'konto' ? '/konto' : oauthZiel(ziel) ? ziel : appUrl(x, next), [sessionCookie(x), cookie('dev', dev, 2 * 365 * 86400), cookie('ap', '', 0)]);
+  redirect(res, ziel === 'konto' ? '/konto' : oauthZiel(ziel) || famZiel(ziel) ? ziel : appUrl(x, next), [sessionCookie(x), cookie('dev', dev, 2 * 365 * 86400), cookie('ap', '', 0)]);
 }
 
 async function readForm(req) {
@@ -435,6 +437,23 @@ const pages = {
     if (f.ok !== '1') return back(res, r, { error: 'access_denied' });
     grant(res, r, update(a.id, (y) => { y.apps = { ...y.apps, [r.c.id]: { scope: r.scope, at: new Date().toISOString() } }; }));
   },
+  'GET /familie': (req, res, q) => famPage(req, res, String(q.get('t') || '')),
+  'POST /familie': async (req, res) => {
+    const f = await readForm(req), a = sessionOf(req), t = String(f.t || '');
+    if (!a) return redirect(res, `/anmelden?ziel=${encodeURIComponent(`/familie?t=${t}`)}`);
+    const x = link('familie', t, false);
+    if (!x) return famPage(req, res, t);
+    if (f.answer !== 'ja') { link('familie', t, true); return page(res, 'Einladung abgelehnt', `<p>Die Einladung ist gelöscht.</p><a class="button" href="${esc(APP_URL)}/">Zur App</a>`); }
+    const problem = famProblem(a, x);
+    if (problem) return famPage(req, res, t, problem);
+    link('familie', t, true);
+    const list = accounts(), me = list.find((y) => y.id === a.id), o = list.find((y) => y.id === x.owner), since = new Date().toISOString();
+    o.family ||= { owner: o.id, role: 'parent', since };
+    me.family = { owner: o.id, role: x.role, since };
+    saveAccounts(list);
+    notifyApp();
+    page(res, 'Willkommen in der Familie', `<p>Du bist jetzt in der Familie von <b>${esc(o.name)}</b> (als ${ROLE[x.role]}) und hast alle Pro-Funktionen von Alltag.</p><a class="button" href="${esc(APP_URL)}/">Zur App</a>`);
+  },
   'GET /abmelden': (req, res) => redirect(res, `${APP_URL}/`, [cookie('as', '', 0)]), // die App hat ihre Sitzung schon beendet
 };
 
@@ -451,7 +470,9 @@ function passwordChanged(id, pw) {
   return x;
 }
 function removeAccount(id) {
-  saveAccounts(accounts().filter((x) => x.id !== id));
+  const list = accounts().filter((x) => x.id !== id);
+  for (const x of list) if (x.family?.owner === id) delete x.family; // mit dem Konto des Besitzers endet die Familie
+  saveAccounts(list);
   save('deleted.json', [...deleted().filter((d) => Date.now() - Date.parse(d.at) < 30 * 864e5), { id, at: new Date().toISOString() }]);
   notifyApp();
 }
@@ -470,6 +491,46 @@ function accountPage(res, a, { info = '', error = '', status } = {}) {
     <details><summary>Konto löschen</summary><p class="small">Löscht dein Konto und alle Daten in der App sofort. Das lässt sich nicht rückgängig machen.</p><form method="post" action="/konto/loeschen">
       ${field('password', 'Dein Passwort', 'type="password" autocomplete="current-password" required')}<label class="check"><input type="checkbox" name="sure" value="ja" required> Ja, alles löschen</label><button class="danger">Konto löschen</button></form></details>
     <p class="links"><a href="/abmelden">Abmelden</a></p>`, { status });
+}
+
+/* ------------------------------------------------------------------ Familie (Plan „familie“) */
+// Besitzer = Konto mit eigenem Plan „familie“ (setzt der Admin). Er lädt per Mail ein (Link 7 Tage, einmal gültig), bis 5 Konten mit ihm.
+// a.family = { owner, role: 'parent' | 'child', since }. Mitglieder haben den Plan, solange der Besitzer ihn hat.
+// Eltern sehen in der App Stundenplan, Hausaufgaben und Termine der Kinder (nur lesen) – das steht in der Einladung und beim Kind im Profil.
+const FAMILY_MAX = 5, ROLE = { parent: 'Elternteil', child: 'Kind' };
+const famActive = (owner, list = accounts()) => { const o = list.find((x) => x.id === owner); return !!o && !o.disabled && o.plan === 'familie'; };
+const famInvites = (owner) => load('links.json', []).filter((x) => x.kind === 'familie' && x.owner === owner && x.exp > Date.now());
+const famZiel = (z) => /^\/familie\?t=[\w-]{20,60}$/.test(String(z || ''));
+function famView(id) { // was die App über die Familie eines Kontos zeigt
+  const list = accounts(), a = list.find((x) => x.id === id);
+  if (!a) return null;
+  const owner = a.family?.owner || (a.plan === 'familie' ? a.id : null), o = owner && list.find((x) => x.id === owner);
+  if (!o) return { family: null };
+  const members = [o, ...list.filter((x) => x.id !== owner && x.family?.owner === owner)];
+  return { family: { owner, active: famActive(owner, list), max: FAMILY_MAX,
+    members: members.map((x) => ({ id: x.id, name: x.name, role: x.id === owner ? 'parent' : x.family.role, owner: x.id === owner })),
+    invites: id === owner ? famInvites(owner).map((x) => ({ email: x.email, role: x.role, expires: new Date(x.exp).toISOString() })) : [] } };
+}
+function famProblem(a, x) { // warum dieses Konto die Einladung nicht annehmen kann ('' = geht)
+  const list = accounts();
+  if (a.id === x.owner) return 'Das ist deine eigene Einladung. Öffne den Link mit dem Konto, das du eingeladen hast.';
+  if (a.demo) return 'Mit dem Demo-Konto geht das nicht.';
+  if (a.family) return a.family.owner === x.owner ? 'Du bist schon in dieser Familie.' : 'Du bist schon in einer anderen Familie. Tritt dort zuerst aus (App → Profil → Familie).';
+  if (a.plan === 'familie') return 'Du hast selbst einen Familien-Plan.';
+  if (!famActive(x.owner, list)) return 'Diese Familie hat gerade keinen Familien-Plan. Frag bei der Person nach, die dich eingeladen hat.';
+  if (1 + list.filter((y) => y.id !== x.owner && y.family?.owner === x.owner).length >= FAMILY_MAX) return `Die Familie ist schon voll (${FAMILY_MAX} Konten).`;
+  return '';
+}
+function famPage(req, res, t, error = '') {
+  const x = link('familie', t, false), o = x && accounts().find((y) => y.id === x.owner);
+  if (!o) return page(res, 'Einladung', '<p>Diese Einladung gilt nicht mehr. Sie war 7 Tage gültig oder wurde schon benutzt. Lass dich bitte noch einmal einladen.</p>', { status: 410 });
+  const a = sessionOf(req), what = `<p><b>${esc(o.name)}</b> lädt dich in den Familien-Plan von Alltag ein, als <b>${ROLE[x.role]}</b>. Damit hast du alle Pro-Funktionen.</p>
+    <p class="small">${x.role === 'child' ? 'Eltern in der Familie sehen deinen Stundenplan, deine Hausaufgaben und deine Termine. Ändern können sie nichts. Notizen, Noten und Nachrichten bleiben privat.' : 'Als Elternteil siehst du Stundenplan, Hausaufgaben und Termine der Kinder in der Familie (nur ansehen).'} Austreten geht jederzeit in der App unter Profil → Familie.</p>`;
+  if (!a) return page(res, 'Einladung in die Familie', `${what}<a class="button" href="/anmelden?ziel=${encodeURIComponent(`/familie?t=${t}`)}">Anmelden und annehmen</a>
+    ${x.code ? `<p class="links"><a href="/registrieren?code=${esc(x.code)}">Noch kein Konto? Registrieren</a></p><p class="small">Nach dem Registrieren und Bestätigen der E-Mail öffnest du den Link aus der Einladung noch einmal.</p>` : ''}`);
+  const problem = error || famProblem(a, x);
+  page(res, 'Einladung in die Familie', `${what}${err(problem)}<p class="small">Angemeldet als ${esc(a.name)}.</p>
+    <form method="post" action="/familie">${hidden('t', t)}${problem ? '' : '<button name="answer" value="ja">Annehmen</button>'}<button class="secondary" name="answer" value="nein">Ablehnen</button></form>`, { status: problem ? 400 : 200 });
 }
 
 /* ------------------------------------------------------------------ Anmelden mit Alltag (OpenID Connect) */
@@ -567,7 +628,7 @@ const api = {
     if (!a || a.disabled || !a.emailOk) return json(res, 400, { error: 'Code ungültig oder abgelaufen' });
     json(res, 200, { account: pub(a) });
   },
-  'GET /api/accounts': (req, res) => json(res, 200, { accounts: accounts().map(pub), deleted: deleted() }),
+  'GET /api/accounts': (req, res) => json(res, 200, { accounts: accounts().map((a, _, l) => pub(a, l)), deleted: deleted() }),
   'PATCH /api/accounts/:id': async (req, res, id) => {
     const b = await readJson(req), list = accounts(), a = list.find((x) => x.id === id);
     if (!a) return json(res, 404, { error: 'nicht gefunden' });
@@ -598,6 +659,51 @@ const api = {
     json(res, 200, { ok: true });
   },
   'GET /api/invites': (req, res) => json(res, 200, { invites: pubInvites() }),
+  // Familie: die App fragt im Namen des angemeldeten Kontos (:id) – sie prüft vorher die Sitzung
+  'GET /api/family/:id': (req, res, id) => { const v = famView(id); return v ? json(res, 200, v) : json(res, 404, { error: 'nicht gefunden' }); },
+  'POST /api/family/:id/invite': async (req, res, id) => {
+    const b = await readJson(req), a = accounts().find((x) => x.id === id), email = normEmail(b.email), role = b.role === 'child' ? 'child' : 'parent';
+    if (!a || a.demo || a.disabled || a.plan !== 'familie' || (a.family && a.family.owner !== a.id)) return json(res, 403, { error: 'Einladen kann nur, wer den Familien-Plan hat.' });
+    if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Bitte eine gültige E-Mail-Adresse eingeben.' });
+    if (email === a.email) return json(res, 400, { error: 'Das ist deine eigene Adresse.' });
+    const other = accounts().find((x) => x.email === email);
+    if (other?.family?.owner === a.id) return json(res, 400, { error: `${other.name} ist schon in deiner Familie.` });
+    if (other?.family || other?.plan === 'familie') return json(res, 400, { error: 'Dieses Konto ist schon in einer anderen Familie.' });
+    const seats = 1 + accounts().filter((x) => x.id !== a.id && x.family?.owner === a.id).length + famInvites(a.id).filter((x) => x.email !== email).length;
+    if (seats >= FAMILY_MAX) return json(res, 400, { error: `In eine Familie passen ${FAMILY_MAX} Konten, offene Einladungen zählen mit.` });
+    if (throttled(`fam:${a.id}`)) return json(res, 429, { error: 'Zu viele Einladungen. Bitte in 15 Minuten erneut.' });
+    strike(`fam:${a.id}`); // gegen Mail-Fluten: höchstens 10 Einladungen in 15 Minuten
+    let code = '';
+    if (!other) { // noch kein Konto: Einladungscode zum Registrieren gleich mitschicken
+      const list = invites();
+      code = newInvite(list);
+      list.push({ code, note: `Familie von ${a.name}`.slice(0, 80), days: 7, created: new Date().toISOString(), usedBy: null, usedAt: null });
+      saveInvites(list);
+    }
+    const t = newLink('familie', `${a.id}|${email}`, 7 * 24, { owner: a.id, email, role, code });
+    sendMail(email, `${a.name} lädt dich in die Familie bei Alltag ein`, ['Hallo,',
+      `${a.name} lädt dich in den Familien-Plan von Alltag ein, als ${ROLE[role]}. Damit hast du alle Pro-Funktionen von Alltag.`,
+      role === 'child' ? 'Eltern in der Familie sehen dann deinen Stundenplan, deine Hausaufgaben und deine Termine. Ändern können sie nichts, Notizen, Noten und Nachrichten bleiben privat.' : 'Als Elternteil siehst du Stundenplan, Hausaufgaben und Termine der Kinder in der Familie (nur ansehen).',
+      code ? `Du hast noch kein Konto? Dann registriere dich zuerst mit dem Einladungscode ${code.replace(/^(\d{3})(\d{3})$/, '$1 $2')} und öffne danach diesen Link noch einmal.` : '',
+      'Die Einladung gilt 7 Tage. Kennst du die Person nicht, ignoriere die Mail einfach.'].filter(Boolean),
+    ['Einladung ansehen', `${SELF}/familie?t=${t}`]);
+    json(res, 200, famView(a.id));
+  },
+  'DELETE /api/family/:id/invites/:email': (req, res, id, email) => {
+    save('links.json', load('links.json', []).filter((x) => !(x.kind === 'familie' && x.owner === id && x.email === normEmail(email))));
+    json(res, 200, famView(id) || { family: null });
+  },
+  'DELETE /api/family/:id/members/:mid': (req, res, id, mid) => { // Besitzer entfernt jemanden, oder ein Mitglied tritt selbst aus
+    const list = accounts(), m = list.find((x) => x.id === mid), owner = m?.family?.owner;
+    if (!owner || !list.some((x) => x.id === id)) return json(res, 404, { error: 'nicht gefunden' });
+    if (mid === owner) return json(res, 400, { error: 'Wer den Familien-Plan hat, bleibt in der Familie. Entferne stattdessen die anderen.' });
+    if (id !== mid && id !== owner) return json(res, 403, { error: 'Entfernen kann nur, wer den Familien-Plan hat.' });
+    delete m.family;
+    if (!list.some((x) => x.id !== owner && x.family?.owner === owner)) delete list.find((x) => x.id === owner)?.family;
+    saveAccounts(list);
+    notifyApp();
+    json(res, 200, famView(id));
+  },
   'POST /api/invites': async (req, res) => {
     const b = await readJson(req), list = invites();
     const forever = b.forever === true, unlimited = b.unlimited === true;
