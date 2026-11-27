@@ -223,6 +223,15 @@ const { smtp, build, readEml } = require('./mail');
     assert.equal((await api('/api/import', 'POST', { accounts: [] })).status, 409); // Umzug nur in einen leeren Dienst
     assert.match((await api('/api/health')).mail, /nicht eingerichtet/);
     assert.equal((await api('/api/test-mail', 'POST', { to: 'kaputt' })).status, 400);
+    // Update-Mail: nur an Konten, die sie wollen; jede Version einmal; Abmelde-Link ohne Anmeldung
+    assert.equal((await api(`/api/accounts/${chefId}`, 'PATCH', { updateMail: true })).account.updateMail, true);
+    assert.deepEqual(await api('/api/update-mail', 'POST', { version: '1.6', items: ['Neu: A', 'Besser: B'] }), { status: 200, ok: true, sent: 1 });
+    const um = lastMail('chef@example.org').text;
+    assert.ok(um.includes('• Neu: A') && um.includes('/updates-aus?id='));
+    assert.equal((await api('/api/update-mail', 'POST', { version: '1.6', items: ['x'] })).status, 409);
+    assert.equal((await browser().go(linkIn(um.slice(um.indexOf('Ein Klick'))).replace(/s=\w+/, 's=falsch'))).status, 400);
+    assert.equal((await browser().go(linkIn(um.slice(um.indexOf('Ein Klick'))))).status, 200);
+    assert.equal((await api('/api/accounts')).accounts.find((a) => a.id === chefId).updateMail, false);
     assert.deepEqual(await api('/api/test-mail', 'POST', { to: 'Test@Example.org' }), { status: 200, ok: true, via: 'ordner' });
     assert.equal(lastMail('test@example.org').subject, 'Testmail von Alltag');
     // Beta-Einladung: Code gleich per Mail, mit Tester-ID und Link, der den Code einträgt

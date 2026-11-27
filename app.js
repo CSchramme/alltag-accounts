@@ -74,7 +74,7 @@ const findLogin = (login) => { const l = String(login || '').trim().toLowerCase(
 const emailTaken = (e, exceptId) => accounts().some((a) => a.id !== exceptId && (a.email === e || a.pendingEmail === e));
 const pub = (a, list = accounts()) => ({ id: a.id, name: a.name, email: a.email || '', emailOk: !!a.emailOk, school: a.school, admin: !!a.admin, demo: !!a.demo, jury: !!a.jury, pro: !!a.pro,
   plan: a.family && famActive(a.family.owner, list) ? 'familie' : a.plan || (a.pro ? 'pro' : 'free'),
-  family: a.family ? { owner: a.family.owner, role: a.family.role, active: famActive(a.family.owner, list) } : null,
+  family: a.family ? { owner: a.family.owner, role: a.family.role, active: famActive(a.family.owner, list) } : null, updateMail: a.updateMail ?? null,
   disabled: !!a.disabled, ver: a.ver || 0, created: a.created });
 function update(id, fn) { // ein Konto ändern und sichern; gibt das geänderte Konto zurück
   const list = accounts(), a = list.find((x) => x.id === id);
@@ -437,6 +437,11 @@ const pages = {
     if (f.ok !== '1') return back(res, r, { error: 'access_denied' });
     grant(res, r, update(a.id, (y) => { y.apps = { ...y.apps, [r.c.id]: { scope: r.scope, at: new Date().toISOString() } }; }));
   },
+  'GET /updates-aus': (req, res, q) => { // Abmelde-Link aus der Update-Mail, ohne Anmeldung
+    const id = String(q.get('id') || ''), ok = /^[\w-]{10,60}$/.test(id) && same(String(q.get('s') || ''), sign(`um.${id}`).slice(0, 24)) && update(id, (a) => { a.updateMail = false; });
+    if (ok) notifyApp();
+    page(res, ok ? 'Update-Mails abbestellt' : 'Link ungültig', ok ? '<p>Du bekommst keine Update-Mails mehr. Wieder einschalten kannst du sie in der App unter Profil → Beta-Test.</p>' : '<p>Dieser Link passt nicht. Abschalten kannst du die Update-Mails auch in der App unter Profil → Beta-Test.</p>', { status: ok ? 200 : 400 });
+  },
   'GET /familie': (req, res, q) => famPage(req, res, String(q.get('t') || '')),
   'POST /familie': async (req, res) => {
     const f = await readForm(req), a = sessionOf(req), t = String(f.t || '');
@@ -649,6 +654,7 @@ const api = {
     if (typeof b.jury === 'boolean') { if (!a.demo) return json(res, 400, { error: 'Erst als Demo-Konto einrichten.' }); a.jury = b.jury; }
     if (typeof b.pro === 'boolean') { a.pro = b.pro; a.plan = b.pro ? (a.plan && a.plan !== 'free' ? a.plan : 'pro') : 'free'; } // alter Schalter
     if (['free', 'pro', 'familie'].includes(b.plan)) { a.plan = b.plan; a.pro = b.plan !== 'free'; } // Abo-Plan, setzt der Admin
+    if (typeof b.updateMail === 'boolean') a.updateMail = b.updateMail; // Mail bei jedem Update: entscheidet das Konto selbst (App → Profil)
     saveAccounts(list);
     notifyApp();
     json(res, 200, { account: pub(a), password }); // neues Passwort nur in dieser einen Antwort
@@ -776,6 +782,21 @@ const api = {
     const lines = ['Hallo,', 'das ist eine Testmail von Alltag. Wenn du sie liest, klappt der Mailversand, und so sehen die Mails von Alltag jetzt aus.', `Gesendet am ${when(Date.now())} Uhr.`];
     try { await mail.send({ to, subject, text: [...lines, `${button[0]}: ${button[1]}`].join('\n\n'), html: mailHtml(subject, lines, button) }); } catch (e) { return json(res, 502, { error: `Senden fehlgeschlagen: ${e.message}` }); }
     json(res, 200, { ok: true, via: mail.configured ? 'smtp' : 'ordner' });
+  },
+  // Update-Mail an alle, die sie wollen (Admin löst sie in der Verwaltung aus); jede Version nur einmal, außer again
+  'POST /api/update-mail': async (req, res) => {
+    const b = await readJson(req), version = String(b.version || '').slice(0, 20), items = (Array.isArray(b.items) ? b.items : []).map((x) => String(x).slice(0, 400)).filter(Boolean).slice(0, 12);
+    if (!/^\d+(\.\d+)*$/.test(version) || !items.length) return json(res, 400, { error: 'Version und Neuigkeiten fehlen.' });
+    const sent = load('update-mails.json', {});
+    if (sent[version] && b.again !== true) return json(res, 409, { error: `Version ${version} wurde schon am ${when(sent[version].at)} Uhr verschickt.` });
+    const to = accounts().filter((a) => a.updateMail === true && a.emailOk && a.email && !a.disabled && !a.demo);
+    for (const a of to) {
+      const off = `${SELF}/updates-aus?id=${a.id}&s=${sign(`um.${a.id}`).slice(0, 24)}`;
+      await sendMail(a.email, `Neu in Alltag ${version}`, [`Hallo ${a.name},`, `Alltag hat ein Update bekommen. Das ist neu in Version ${version}:`, ...items.map((i) => `• ${i}`),
+        `Keine Update-Mails mehr? Ein Klick genügt: ${off}`], ['Alltag öffnen', `${APP_URL}/`]);
+    }
+    save('update-mails.json', { ...sent, [version]: { at: new Date().toISOString(), count: to.length } });
+    json(res, 200, { ok: true, sent: to.length });
   },
   'GET /api/health': async (req, res) => json(res, 200, { mail: await mail.check(), accounts: accounts().length, unconfirmed: accounts().filter((a) => !a.emailOk).length }),
 };
